@@ -1,6 +1,9 @@
 package envoyconfig
 
-import "encoding/json"
+import (
+	"encoding/json"
+	"time"
+)
 
 type ClusterDiscoveryType string
 
@@ -23,10 +26,11 @@ type (
 	CIDRRange struct {
 	}
 	Cluster struct {
-		Name           string                `json:"name"`
-		Type           ClusterDiscoveryType  `json:"type"`
-		ConnectTimeout string                `json:"connect_timeout,omitempty"`
-		LoadAssignment ClusterLoadAssignment `json:"load_assignment"`
+		Name                 string                `json:"name"`
+		Type                 ClusterDiscoveryType  `json:"type"`
+		ConnectTimeout       string                `json:"connect_timeout,omitempty"`
+		LoadAssignment       ClusterLoadAssignment `json:"load_assignment"`
+		HTTP2ProtocolOptions *HTTP2ProtocolOptions `json:"http2_protocol_options,omitempty"`
 	}
 	ClusterLoadAssignment struct {
 		ClusterName string                       `json:"cluster_name"`
@@ -64,6 +68,8 @@ type (
 	HealthCheckConfig struct {
 	}
 	HealthStatus struct {
+	}
+	HTTP2ProtocolOptions struct {
 	}
 	LBEndpoint struct {
 		Endpoint            Endpoint      `json:"endpoint"`
@@ -158,7 +164,8 @@ type (
 		AccessLog          []AccessLog        `json:"access_log"`
 	}
 	HTTPFilter struct {
-		Name string `json:"name"`
+		Name        string      `json:"name"`
+		TypedConfig interface{} `json:"typed_config"`
 	}
 	Route struct {
 		Name  string      `json:"name"`
@@ -205,5 +212,29 @@ func (mgr HTTPConnectionManager) MarshalJSON() ([]byte, error) {
 	}{
 		noncustom: noncustom(mgr),
 		Type:      "type.googleapis.com/envoy.config.filter.network.http_connection_manager.v2.HttpConnectionManager",
+	})
+}
+
+type (
+	ExtAuthz struct {
+		GRPCService *GRPCService `json:"grpc_service,omitempty"`
+	}
+	GRPCService struct {
+		EnvoyGRPC *EnvoyGRPC    `json:"envoy_grpc,omitempty"`
+		Timeout   time.Duration `json:"timeout,omitempty"`
+	}
+	EnvoyGRPC struct {
+		ClusterName string `json:"cluster_name"`
+	}
+)
+
+func (extauthz ExtAuthz) MarshalJSON() ([]byte, error) {
+	type noncustom ExtAuthz
+	return json.Marshal(struct {
+		noncustom
+		Type string `json:"@type"`
+	}{
+		noncustom: noncustom(extauthz),
+		Type:      "type.googleapis.com/envoy.extensions.filters.http.ext_authz.v3.ExtAuthz",
 	})
 }

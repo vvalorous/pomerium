@@ -99,7 +99,7 @@ func (srv *Server) handleSignals() {
 }
 
 func (srv *Server) startEnvoy() error {
-	srv.cmd = exec.Command("envoy", "-c", configFileName)
+	srv.cmd = exec.Command("envoy", "-c", configFileName, "--log-level", "debug")
 	srv.cmd.Dir = srv.wd
 	srv.cmd.Stdout = os.Stdout
 	srv.cmd.Stderr = os.Stderr

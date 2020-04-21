@@ -1,6 +1,7 @@
 package grpc
 
 import (
+	"context"
 	"crypto/tls"
 	"net"
 	"os"
@@ -31,6 +32,10 @@ func NewServer(opt *ServerOptions, registrationFn func(s *grpc.Server), wg *sync
 	grpcOpts := []grpc.ServerOption{
 		grpc.StatsHandler(metrics.NewGRPCServerStatsHandler(opt.ServiceName)),
 		grpc.KeepaliveParams(opt.KeepaliveParams),
+		grpc.UnaryInterceptor(func(ctx context.Context, req interface{}, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (resp interface{}, err error) {
+			log.Info().Interface("request", req).Msg("GRPC REQUEST")
+			return handler(ctx, req)
+		}),
 	}
 
 	if opt.TLSCertificate != nil {

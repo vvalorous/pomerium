@@ -78,9 +78,21 @@ func getListenersConfig(options *config.Options) []envoyconfig.Listener {
 								Name:         "policy_route",
 								VirtualHosts: getPolicyVirtualHosts(options.Policies),
 							},
-							HTTPFilters: []envoyconfig.HTTPFilter{{
-								Name: "envoy.filters.http.router",
-							}},
+							HTTPFilters: []envoyconfig.HTTPFilter{
+								{
+									Name: "envoy.filters.http.ext_authz",
+									TypedConfig: &envoyconfig.ExtAuthz{
+										GRPCService: &envoyconfig.GRPCService{
+											EnvoyGRPC: &envoyconfig.EnvoyGRPC{
+												ClusterName: "pomerium-authorization",
+											},
+										},
+									},
+								},
+								{
+									Name: "envoy.filters.http.router",
+								},
+							},
 							AccessLog: []envoyconfig.AccessLog{{
 								Name: "stdout",
 								TypedConfig: &envoyconfig.FileAccessLog{
@@ -146,6 +158,22 @@ func getClusterName(scheme, host string) string {
 
 func getClustersConfig(options *config.Options) []envoyconfig.Cluster {
 	var clusters []envoyconfig.Cluster
+	clusters = append(clusters, envoyconfig.Cluster{
+		Name:           "pomerium-authorization",
+		Type:           envoyconfig.ClusterDiscoveryTypeLogicalDNS,
+		ConnectTimeout: "30s",
+		LoadAssignment: envoyconfig.ClusterLoadAssignment{
+			ClusterName: "pomerium-authorization",
+			Endpoints: []envoyconfig.LocalityLBEndpoint{{
+				LBEndpoints: []envoyconfig.LBEndpoint{{
+					Endpoint: envoyconfig.Endpoint{
+						Address: getAddressFromString(options.AuthorizeURL.Host, getDefaultPort(options.AuthorizeURL.Scheme)),
+					},
+				}},
+			}},
+		},
+		HTTP2ProtocolOptions: &envoyconfig.HTTP2ProtocolOptions{},
+	})
 	clusters = append(clusters, getPoliciesClustersConfig(options.Policies)...)
 	return clusters
 }

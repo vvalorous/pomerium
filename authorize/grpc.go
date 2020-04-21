@@ -6,9 +6,14 @@ import (
 	"context"
 	"net/url"
 
+	envoy_api_v2_core "github.com/envoyproxy/go-control-plane/envoy/api/v2/core"
+	envoy_service_auth_v2 "github.com/envoyproxy/go-control-plane/envoy/service/auth/v2"
+	envoy_type_v2 "github.com/envoyproxy/go-control-plane/envoy/type"
 	"github.com/pomerium/pomerium/authorize/evaluator"
 	"github.com/pomerium/pomerium/internal/grpc/authorize"
 	"github.com/pomerium/pomerium/internal/telemetry/trace"
+	"google.golang.org/genproto/googleapis/rpc/status"
+	"google.golang.org/grpc/codes"
 )
 
 // IsAuthorized checks to see if a given user is authorized to make a request.
@@ -26,6 +31,28 @@ func (a *Authorize) IsAuthorized(ctx context.Context, in *authorize.IsAuthorized
 		URL:        getFullURL(in.GetRequestUrl(), in.GetRequestHost()),
 	}
 	return a.pe.IsAuthorized(ctx, req)
+}
+
+func (a *Authorize) Check(ctx context.Context, in *envoy_service_auth_v2.CheckRequest) (*envoy_service_auth_v2.CheckResponse, error) {
+	return &envoy_service_auth_v2.CheckResponse{
+		Status: &status.Status{
+			Code:    int32(codes.Unauthenticated),
+			Message: "unauthenticated",
+		},
+		HttpResponse: &envoy_service_auth_v2.CheckResponse_DeniedResponse{
+			DeniedResponse: &envoy_service_auth_v2.DeniedHttpResponse{
+				Status: &envoy_type_v2.HttpStatus{
+					Code: envoy_type_v2.StatusCode_Found,
+				},
+				Headers: []*envoy_api_v2_core.HeaderValueOption{{
+					Header: &envoy_api_v2_core.HeaderValue{
+						Key:   "Location",
+						Value: "http://www.google.com",
+					},
+				}},
+			},
+		},
+	}, nil
 }
 
 type protoHeader map[string]*authorize.IsAuthorizedRequest_Headers

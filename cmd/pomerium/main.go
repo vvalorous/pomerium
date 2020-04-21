@@ -7,6 +7,7 @@ import (
 	"sync"
 	"time"
 
+	envoy_service_auth_v2 "github.com/envoyproxy/go-control-plane/envoy/service/auth/v2"
 	"github.com/pomerium/pomerium/authenticate"
 	"github.com/pomerium/pomerium/authorize"
 	"github.com/pomerium/pomerium/cache"
@@ -156,6 +157,7 @@ func newGRPCServer(opt config.Options, as *authorize.Authorize, cs *cache.Cache,
 	regFn := func(s *grpc.Server) {
 		if as != nil {
 			pbAuthorize.RegisterAuthorizerServer(s, as)
+			envoy_service_auth_v2.RegisterAuthorizationServer(s, as)
 		}
 		if cs != nil {
 			pbCache.RegisterCacheServer(s, cs)
