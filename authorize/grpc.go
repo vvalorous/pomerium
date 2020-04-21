@@ -12,6 +12,7 @@ import (
 	"github.com/pomerium/pomerium/authorize/evaluator"
 	"github.com/pomerium/pomerium/internal/grpc/authorize"
 	"github.com/pomerium/pomerium/internal/telemetry/trace"
+	"github.com/pomerium/pomerium/internal/urlutil"
 	"google.golang.org/genproto/googleapis/rpc/status"
 	"google.golang.org/grpc/codes"
 )
@@ -34,6 +35,19 @@ func (a *Authorize) IsAuthorized(ctx context.Context, in *authorize.IsAuthorized
 }
 
 func (a *Authorize) Check(ctx context.Context, in *envoy_service_auth_v2.CheckRequest) (*envoy_service_auth_v2.CheckResponse, error) {
+	a.mu.RLock()
+	authenticateURL := *a.authenticateURL
+	sharedKey := a.sharedKey
+	a.mu.RUnlock()
+
+	host := in.GetAttributes().GetRequest().GetHttp().GetHost()
+	path := in.GetAttributes().GetRequest().GetHttp().GetPath()
+
+	q := authenticateURL.Query()
+	q.Set(urlutil.QueryRedirectURI, "https://"+host+path)
+	authenticateURL.RawQuery = q.Encode()
+	redirectTo := urlutil.NewSignedURL(sharedKey, &authenticateURL).String()
+
 	return &envoy_service_auth_v2.CheckResponse{
 		Status: &status.Status{
 			Code:    int32(codes.Unauthenticated),
@@ -47,7 +61,7 @@ func (a *Authorize) Check(ctx context.Context, in *envoy_service_auth_v2.CheckRe
 				Headers: []*envoy_api_v2_core.HeaderValueOption{{
 					Header: &envoy_api_v2_core.HeaderValue{
 						Key:   "Location",
-						Value: "http://www.google.com",
+						Value: redirectTo,
 					},
 				}},
 			},
