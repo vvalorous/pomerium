@@ -49,7 +49,7 @@ type (
 		FilterChainMatch FilterChainMatch `json:"filter_chain_match"`
 		Filters          []Filter         `json:"filters"`
 		UseProxyProtocol bool             `json:"use_proxy_protocol,omitempty"`
-		TransportSocket  *TransportSocket `json:"transport_socket"`
+		TransportSocket  *TransportSocket `json:"transport_socket,omitempty"`
 	}
 	FilterChainMatch struct {
 		DestinationPort      *uint32     `json:"destination_port,omitempty"`
@@ -104,14 +104,58 @@ type (
 		Listeners []Listener `json:"listeners,omitempty"`
 		Clusters  []Cluster  `json:"clusters,omitempty"`
 	}
-	TransportSocket struct{}
+	TransportSocket struct {
+		Name        string      `json:"name"`
+		TypedConfig interface{} `json:"typed_config"`
+	}
 )
 
 type (
+	DownstreamTLSContext struct {
+		CommonTLSContext CommonTLSContext `json:"common_tls_context"`
+	}
+	CommonTLSContext struct {
+		TLSCertificates []TLSCertificate `json:"tls_certificates"`
+	}
+	TLSCertificate struct {
+		CertificateChain *DataSource `json:"certificate_chain,omitempty"`
+		PrivateKey       *DataSource `json:"private_key,omitempty"`
+	}
+	DataSource struct {
+		Filename     string `json:"filename,omitempty"`
+		InlineBytes  []byte `json:"inline_bytes,omitempty"`
+		InlineString string `json:"inline_string,omitempty"`
+	}
+)
+
+func (dtlsctx DownstreamTLSContext) MarshalJSON() ([]byte, error) {
+	type noncustom DownstreamTLSContext
+	return json.Marshal(struct {
+		noncustom
+		Type string `json:"@type"`
+	}{
+		noncustom: noncustom(dtlsctx),
+		Type:      "type.googleapis.com/envoy.extensions.transport_sockets.tls.v3.DownstreamTlsContext",
+	})
+}
+
+type (
+	AccessLog struct {
+		Name        string           `json:"name"`
+		Filter      *AccessLogFilter `json:"filter"`
+		TypedConfig interface{}      `json:"typed_config"`
+	}
+	AccessLogFilter struct {
+	}
+	FileAccessLog struct {
+		Path string `json:"path"`
+	}
 	HTTPConnectionManager struct {
+		StatPrefix         string             `json:"stat_prefix"`
 		CodecType          string             `json:"codec_type"`
-		RouteConfiguration RouteConfiguration `json:"route_configuration"`
+		RouteConfiguration RouteConfiguration `json:"route_config"`
 		HTTPFilters        []HTTPFilter       `json:"http_filters,omitempty"`
+		AccessLog          []AccessLog        `json:"access_log"`
 	}
 	HTTPFilter struct {
 		Name string `json:"name"`
@@ -119,7 +163,7 @@ type (
 	Route struct {
 		Name  string      `json:"name"`
 		Match RouteMatch  `json:"match"`
-		Route RouteAction `json:"route_action"`
+		Route RouteAction `json:"route"`
 	}
 	RouteAction struct {
 		Cluster         string `json:"cluster"`
@@ -141,6 +185,17 @@ type (
 		Routes  []Route  `json:"routes"`
 	}
 )
+
+func (fal FileAccessLog) MarshalJSON() ([]byte, error) {
+	type noncustom FileAccessLog
+	return json.Marshal(struct {
+		noncustom
+		Type string `json:"@type"`
+	}{
+		noncustom: noncustom(fal),
+		Type:      "type.googleapis.com/envoy.extensions.access_loggers.file.v3.FileAccessLog",
+	})
+}
 
 func (mgr HTTPConnectionManager) MarshalJSON() ([]byte, error) {
 	type noncustom HTTPConnectionManager

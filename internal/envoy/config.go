@@ -3,6 +3,8 @@ package envoy
 import (
 	"fmt"
 	"net"
+	"os"
+	"path/filepath"
 	"sort"
 	"strconv"
 
@@ -24,21 +26,54 @@ func GetBootstrapConfig(options *config.Options) *envoyconfig.Bootstrap {
 	}
 }
 
+func getAbsoluteFilePath(filename string) string {
+	if filepath.IsAbs(filename) {
+		return filename
+	}
+	wd, _ := os.Getwd()
+	return filepath.Join(wd, filename)
+}
+
 func getListenersConfig(options *config.Options) []envoyconfig.Listener {
 	addr := options.Addr
 	if addr == "" {
 		addr = defaultAddr
 	}
+	envoyAddr := getAddressFromString(addr, 0)
+	var transportSocket *envoyconfig.TransportSocket
+	if !options.InsecureServer {
+		var cert envoyconfig.TLSCertificate
+		if options.Cert != "" {
+			cert.CertificateChain = &envoyconfig.DataSource{InlineString: options.Cert}
+		} else {
+			cert.CertificateChain = &envoyconfig.DataSource{Filename: getAbsoluteFilePath(options.CertFile)}
+		}
+		if options.Key != "" {
+			cert.PrivateKey = &envoyconfig.DataSource{InlineString: options.Key}
+		} else {
+			cert.PrivateKey = &envoyconfig.DataSource{Filename: getAbsoluteFilePath(options.KeyFile)}
+		}
+		transportSocket = &envoyconfig.TransportSocket{
+			Name: "tls",
+			TypedConfig: &envoyconfig.DownstreamTLSContext{
+				CommonTLSContext: envoyconfig.CommonTLSContext{
+					TLSCertificates: []envoyconfig.TLSCertificate{cert},
+				},
+			},
+		}
+	}
+
 	return []envoyconfig.Listener{
 		{
-			Address: getAddressFromString(addr, 0),
+			Address: envoyAddr,
 			FilterChains: []envoyconfig.FilterChain{
 				// todo: add authentication service
 				{
 					Filters: []envoyconfig.Filter{{
 						Name: "envoy.filters.network.http_connection_manager",
 						TypedConfig: envoyconfig.HTTPConnectionManager{
-							CodecType: "AUTO",
+							StatPrefix: "ingress_http",
+							CodecType:  "AUTO",
 							RouteConfiguration: envoyconfig.RouteConfiguration{
 								Name:         "policy_route",
 								VirtualHosts: getPolicyVirtualHosts(options.Policies),
@@ -46,8 +81,15 @@ func getListenersConfig(options *config.Options) []envoyconfig.Listener {
 							HTTPFilters: []envoyconfig.HTTPFilter{{
 								Name: "envoy.filters.http.router",
 							}},
+							AccessLog: []envoyconfig.AccessLog{{
+								Name: "stdout",
+								TypedConfig: &envoyconfig.FileAccessLog{
+									Path: "/dev/stdout",
+								},
+							}},
 						},
 					}},
+					TransportSocket: transportSocket,
 				},
 			},
 		},
@@ -130,8 +172,9 @@ func getPoliciesClustersConfig(policies []config.Policy) []envoyconfig.Cluster {
 	var clusters []envoyconfig.Cluster
 	for _, dst := range dsts {
 		c := envoyconfig.Cluster{
-			Name: getClusterName(dst.Scheme, dst.Host),
-			Type: envoyconfig.ClusterDiscoveryTypeLogicalDNS,
+			Name:           getClusterName(dst.Scheme, dst.Host),
+			Type:           envoyconfig.ClusterDiscoveryTypeLogicalDNS,
+			ConnectTimeout: "30s",
 			LoadAssignment: envoyconfig.ClusterLoadAssignment{
 				ClusterName: getClusterName(dst.Scheme, dst.Host),
 				Endpoints: []envoyconfig.LocalityLBEndpoint{{
@@ -165,6 +208,9 @@ func getAddressFromString(addr string, defaultPort int) envoyconfig.Address {
 	port, err := strconv.Atoi(strport)
 	if err != nil {
 		port = defaultPort
+	}
+	if host == "" {
+		host = "0.0.0.0"
 	}
 	return envoyconfig.Address{
 		SocketAddress: &envoyconfig.SocketAddress{

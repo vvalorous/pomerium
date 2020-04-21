@@ -11,6 +11,7 @@ import (
 	"github.com/pomerium/pomerium/authorize"
 	"github.com/pomerium/pomerium/cache"
 	"github.com/pomerium/pomerium/config"
+	"github.com/pomerium/pomerium/internal/envoy"
 	"github.com/pomerium/pomerium/internal/frontend"
 	pgrpc "github.com/pomerium/pomerium/internal/grpc"
 	pbAuthorize "github.com/pomerium/pomerium/internal/grpc/authorize"
@@ -49,6 +50,8 @@ func run() error {
 	if err != nil {
 		return err
 	}
+	var optionsUpdaters []config.OptionsUpdater
+
 	log.Info().Str("version", version.FullVersion()).Msg("cmd/pomerium")
 	// since we can have multiple listeners, we create a wait group
 	var wg sync.WaitGroup
@@ -71,6 +74,7 @@ func run() error {
 	if err != nil {
 		return err
 	}
+	optionsUpdaters = append(optionsUpdaters, authz)
 
 	cacheSvc, err := newCacheService(*opt)
 	if err != nil {
@@ -87,21 +91,31 @@ func run() error {
 	if proxy != nil {
 		defer proxy.AuthorizeClient.Close()
 	}
+	optionsUpdaters = append(optionsUpdaters, proxy)
 
-	opt.OnConfigChange(func(e fsnotify.Event) {
-		log.Info().Str("file", e.Name).Msg("cmd/pomerium: config file changed")
-		opt = config.HandleConfigUpdate(*configFile, opt, []config.OptionsUpdater{authz, proxy})
-	})
+	if true {
+		srv, err := envoy.NewServer(opt, &wg)
+		if err != nil {
+			return err
+		}
+		optionsUpdaters = append(optionsUpdaters, srv)
+	} else {
+		srv, err := httputil.NewServer(httpServerOptions(opt), r, &wg)
+		if err != nil {
+			return err
+		}
+		go httputil.Shutdown(srv)
+	}
 
 	if err := newGRPCServer(*opt, authz, cacheSvc, &wg); err != nil {
 		return err
 	}
 
-	srv, err := httputil.NewServer(httpServerOptions(opt), r, &wg)
-	if err != nil {
-		return err
-	}
-	go httputil.Shutdown(srv)
+	opt.OnConfigChange(func(e fsnotify.Event) {
+		log.Info().Str("file", e.Name).Msg("cmd/pomerium: config file changed")
+		opt = config.HandleConfigUpdate(*configFile, opt, optionsUpdaters)
+	})
+
 	// Blocks and waits until ALL WaitGroup members have signaled completion
 	wg.Wait()
 	return nil

@@ -16,6 +16,7 @@ require (
 	github.com/google/go-cmp v0.4.0
 	github.com/gorilla/mux v1.7.4
 	github.com/mitchellh/hashstructure v1.0.0
+	github.com/natefinch/atomic v0.0.0-20150920032501-a62ce929ffcc
 	github.com/onsi/ginkgo v1.11.0 // indirect
 	github.com/onsi/gomega v1.8.1 // indirect
 	github.com/open-policy-agent/opa v0.18.0
