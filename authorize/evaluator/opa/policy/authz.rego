@@ -63,6 +63,19 @@ allow {
 	count(deny)==0
 }
 
+# allow authenticate urls
+allow {
+	authenticate_url_obj := parse_url(data.authenticate_url)
+	input_url_obj := parse_url(input.url)
+	authenticate_url_obj.host == input_url_obj.host
+}
+
+# allow pomerium urls
+allow {
+	contains(input.url, "/.pomerium/")
+	not contains(input.url,"/.pomerium/admin")
+}
+
 allowed_route(input_url, policy){
 	input_url_obj := parse_url(input_url)
 	allowed_route_source(input_url_obj, policy)

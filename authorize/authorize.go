@@ -82,10 +82,11 @@ func newPolicyEvaluator(opts *config.Options) (evaluator.Evaluator, error) {
 	}
 
 	data := map[string]interface{}{
-		"shared_key":     opts.SharedKey,
-		"route_policies": opts.Policies,
-		"admins":         opts.Administrators,
-		"signing_key":    jwk,
+		"shared_key":       opts.SharedKey,
+		"route_policies":   opts.Policies,
+		"admins":           opts.Administrators,
+		"signing_key":      jwk,
+		"authenticate_url": opts.AuthenticateURLString,
 	}
 
 	return opa.New(ctx, &opa.Options{Data: data})

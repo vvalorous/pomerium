@@ -1,17 +1,21 @@
 package main
 
 import (
+	"context"
 	"flag"
 	"fmt"
+	"net"
 	"net/http"
 	"sync"
 	"time"
 
 	envoy_service_auth_v2 "github.com/envoyproxy/go-control-plane/envoy/service/auth/v2"
+	"github.com/fsnotify/fsnotify"
 	"github.com/pomerium/pomerium/authenticate"
 	"github.com/pomerium/pomerium/authorize"
 	"github.com/pomerium/pomerium/cache"
 	"github.com/pomerium/pomerium/config"
+	"github.com/pomerium/pomerium/internal/controlplane"
 	"github.com/pomerium/pomerium/internal/envoy"
 	"github.com/pomerium/pomerium/internal/frontend"
 	pgrpc "github.com/pomerium/pomerium/internal/grpc"
@@ -25,8 +29,8 @@ import (
 	"github.com/pomerium/pomerium/internal/urlutil"
 	"github.com/pomerium/pomerium/internal/version"
 	"github.com/pomerium/pomerium/proxy"
+	"golang.org/x/sync/errgroup"
 
-	"github.com/fsnotify/fsnotify"
 	"github.com/gorilla/mux"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/keepalive"
@@ -54,72 +58,157 @@ func run() error {
 	var optionsUpdaters []config.OptionsUpdater
 
 	log.Info().Str("version", version.FullVersion()).Msg("cmd/pomerium")
-	// since we can have multiple listeners, we create a wait group
-	var wg sync.WaitGroup
-	if err := setupMetrics(opt, &wg); err != nil {
-		return err
+
+	ctx := context.Background()
+
+	// setup the control plane
+	controlPlane, err := controlplane.NewServer()
+	if err != nil {
+		return fmt.Errorf("error creating control plane: %w", err)
 	}
-	if err := setupTracing(opt); err != nil {
-		return err
-	}
-	if err := setupHTTPRedirectServer(opt, &wg); err != nil {
-		return err
+	optionsUpdaters = append(optionsUpdaters, controlPlane)
+	err = controlPlane.UpdateOptions(*opt)
+	if err != nil {
+		return fmt.Errorf("error updating control plane options: %w", err)
 	}
 
-	r := newGlobalRouter(opt)
-	_, err = newAuthenticateService(*opt, r)
-	if err != nil {
-		return err
-	}
-	authz, err := newAuthorizeService(*opt)
-	if err != nil {
-		return err
-	}
-	optionsUpdaters = append(optionsUpdaters, authz)
+	_, grpcPort, _ := net.SplitHostPort(controlPlane.GRPCListener.Addr().String())
+	_, httpPort, _ := net.SplitHostPort(controlPlane.HTTPListener.Addr().String())
 
-	cacheSvc, err := newCacheService(*opt)
+	//
+	envoyServer, err := envoy.NewServer(opt, grpcPort, httpPort)
 	if err != nil {
-		return err
-	}
-	if cacheSvc != nil {
-		defer cacheSvc.Close()
+		return fmt.Errorf("error creating envoy server")
 	}
 
-	proxy, err := newProxyService(*opt, r)
-	if err != nil {
-		return err
-	}
-	if proxy != nil {
-		defer proxy.AuthorizeClient.Close()
-	}
-	optionsUpdaters = append(optionsUpdaters, proxy)
-
-	if true {
-		srv, err := envoy.NewServer(opt, &wg)
+	// add services
+	if config.IsAuthenticate(opt.Services) {
+		svc, err := authenticate.New(*opt)
 		if err != nil {
-			return err
+			return fmt.Errorf("error creating authenticate service: %w", err)
 		}
-		optionsUpdaters = append(optionsUpdaters, srv)
-	} else {
-		srv, err := httputil.NewServer(httpServerOptions(opt), r, &wg)
+		host := urlutil.StripPort(opt.AuthenticateURL.Host)
+		sr := controlPlane.HTTPRouter.Host(host).Subrouter()
+		svc.Mount(sr)
+		log.Info().Str("host", host).Msg("enabled authenticate service")
+	}
+
+	if config.IsAuthorize(opt.Services) {
+		svc, err := authorize.New(*opt)
 		if err != nil {
-			return err
+			return fmt.Errorf("error creating authorize service: %w", err)
 		}
-		go httputil.Shutdown(srv)
+		pbAuthorize.RegisterAuthorizerServer(controlPlane.GRPCServer, svc)
+		log.Info().Msg("enabled authorize service")
+
+		optionsUpdaters = append(optionsUpdaters, svc)
+		err = svc.UpdateOptions(*opt)
+		if err != nil {
+			return fmt.Errorf("error updating authorize options: %w", err)
+		}
 	}
 
-	if err := newGRPCServer(*opt, authz, cacheSvc, &wg); err != nil {
-		return err
+	if config.IsCache(opt.Services) {
+		svc, err := cache.New(*opt)
+		if err != nil {
+			return fmt.Errorf("error creating config service: %w", err)
+		}
+		defer svc.Close()
+		pbCache.RegisterCacheServer(controlPlane.GRPCServer, svc)
+		log.Info().Msg("enabled cache service")
 	}
 
+	// start the config change listener
 	opt.OnConfigChange(func(e fsnotify.Event) {
 		log.Info().Str("file", e.Name).Msg("cmd/pomerium: config file changed")
 		opt = config.HandleConfigUpdate(*configFile, opt, optionsUpdaters)
 	})
 
-	// Blocks and waits until ALL WaitGroup members have signaled completion
-	wg.Wait()
-	return nil
+	// run everything
+	eg, ctx := errgroup.WithContext(ctx)
+	eg.Go(func() error {
+		return controlPlane.Run(ctx)
+	})
+	eg.Go(func() error {
+		return envoyServer.Run(ctx)
+	})
+	return eg.Wait()
+
+	// since we can have multiple listeners, we create a wait group
+	// var wg sync.WaitGroup
+	// if err := setupMetrics(opt, &wg); err != nil {
+	// 	return err
+	// }
+	// if err := setupTracing(opt); err != nil {
+	// 	return err
+	// }
+	// if err := setupHTTPRedirectServer(opt, &wg); err != nil {
+	// 	return err
+	// }
+
+	// r := newGlobalRouter(opt)
+	// _, err = newAuthenticateService(*opt, r)
+	// if err != nil {
+	// 	return err
+	// }
+	// authz, err := newAuthorizeService(*opt)
+	// if err != nil {
+	// 	return err
+	// }
+	// optionsUpdaters = append(optionsUpdaters, authz)
+
+	// cacheSvc, err := newCacheService(*opt)
+	// if err != nil {
+	// 	return err
+	// }
+	// if cacheSvc != nil {
+	// 	defer cacheSvc.Close()
+	// }
+
+	// // new envoy mode!
+	// if true {
+	// 	hopt := httpServerOptions(opt)
+	// 	hopt.Addr = "127.0.0.1:5080"
+	// 	controlServer, err := httputil.NewServer(hopt, r, &wg)
+	// 	if err != nil {
+	// 		return err
+	// 	}
+	// 	go httputil.Shutdown(controlServer)
+
+	// 	srv, err := envoy.NewServer(opt, &wg)
+	// 	if err != nil {
+	// 		return err
+	// 	}
+	// 	optionsUpdaters = append(optionsUpdaters, srv)
+	// } else {
+	// 	proxy, err := newProxyService(*opt, r)
+	// 	if err != nil {
+	// 		return err
+	// 	}
+	// 	if proxy != nil {
+	// 		defer proxy.AuthorizeClient.Close()
+	// 	}
+	// 	optionsUpdaters = append(optionsUpdaters, proxy)
+
+	// 	srv, err := httputil.NewServer(httpServerOptions(opt), r, &wg)
+	// 	if err != nil {
+	// 		return err
+	// 	}
+	// 	go httputil.Shutdown(srv)
+	// }
+
+	// if err := newGRPCServer(*opt, authz, cacheSvc, &wg); err != nil {
+	// 	return err
+	// }
+
+	// opt.OnConfigChange(func(e fsnotify.Event) {
+	// 	log.Info().Str("file", e.Name).Msg("cmd/pomerium: config file changed")
+	// 	opt = config.HandleConfigUpdate(*configFile, opt, optionsUpdaters)
+	// })
+
+	// // Blocks and waits until ALL WaitGroup members have signaled completion
+	// wg.Wait()
+	// return nil
 }
 
 func newAuthenticateService(opt config.Options, r *mux.Router) (*authenticate.Authenticate, error) {

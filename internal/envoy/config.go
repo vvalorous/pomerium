@@ -3,6 +3,7 @@ package envoy
 import (
 	"fmt"
 	"net"
+	"net/url"
 	"os"
 	"path/filepath"
 	"sort"
@@ -66,45 +67,55 @@ func getListenersConfig(options *config.Options) []envoyconfig.Listener {
 	return []envoyconfig.Listener{
 		{
 			Address: envoyAddr,
-			FilterChains: []envoyconfig.FilterChain{
-				// todo: add authentication service
-				{
-					Filters: []envoyconfig.Filter{{
-						Name: "envoy.filters.network.http_connection_manager",
-						TypedConfig: envoyconfig.HTTPConnectionManager{
-							StatPrefix: "ingress_http",
-							CodecType:  "AUTO",
-							RouteConfiguration: envoyconfig.RouteConfiguration{
-								Name:         "policy_route",
-								VirtualHosts: getPolicyVirtualHosts(options.Policies),
-							},
-							HTTPFilters: []envoyconfig.HTTPFilter{
-								{
-									Name: "envoy.filters.http.ext_authz",
-									TypedConfig: &envoyconfig.ExtAuthz{
-										GRPCService: &envoyconfig.GRPCService{
-											EnvoyGRPC: &envoyconfig.EnvoyGRPC{
-												ClusterName: "pomerium-authorization",
-											},
+			FilterChains: []envoyconfig.FilterChain{{
+				Filters: []envoyconfig.Filter{{
+					Name: "envoy.filters.network.http_connection_manager",
+					TypedConfig: envoyconfig.HTTPConnectionManager{
+						StatPrefix: "ingress_http",
+						CodecType:  "AUTO",
+						RouteConfiguration: envoyconfig.RouteConfiguration{
+							Name: "main_route",
+							VirtualHosts: append([]envoyconfig.VirtualHost{
+								getVirtualHost("pomerium-authentication", options.AuthenticateURL),
+								getVirtualHost("pomerium-authorization", options.AuthorizeURL),
+							}, getPolicyVirtualHosts(options.Policies)...),
+						},
+						HTTPFilters: []envoyconfig.HTTPFilter{
+							{
+								Name: "envoy.filters.http.ext_authz",
+								TypedConfig: &envoyconfig.ExtAuthz{
+									GRPCService: &envoyconfig.GRPCService{
+										EnvoyGRPC: &envoyconfig.EnvoyGRPC{
+											ClusterName: "pomerium-authorization",
 										},
 									},
 								},
-								{
-									Name: "envoy.filters.http.router",
-								},
 							},
-							AccessLog: []envoyconfig.AccessLog{{
-								Name: "stdout",
-								TypedConfig: &envoyconfig.FileAccessLog{
-									Path: "/dev/stdout",
-								},
-							}},
+							{
+								Name: "envoy.filters.http.router",
+							},
 						},
-					}},
-					TransportSocket: transportSocket,
-				},
-			},
+					},
+				}},
+				TransportSocket: transportSocket,
+			}},
 		},
+	}
+}
+
+func getVirtualHost(name string, u *url.URL) envoyconfig.VirtualHost {
+	return envoyconfig.VirtualHost{
+		Name:    u.Host,
+		Domains: []string{u.Host},
+		Routes: []envoyconfig.Route{{
+			Name: name + "-route",
+			Match: envoyconfig.RouteMatch{
+				Prefix: "/",
+			},
+			Route: envoyconfig.RouteAction{
+				Cluster: name,
+			},
+		}},
 	}
 }
 
@@ -124,6 +135,18 @@ func getPolicyVirtualHosts(policies []config.Policy) []envoyconfig.VirtualHost {
 		vh := envoyconfig.VirtualHost{
 			Name:    hostname,
 			Domains: []string{hostname},
+			Routes: []envoyconfig.Route{ // always send /.pomerium/ URLs to the control plane
+				{
+					Name:  "route-pomerium-prefix",
+					Match: envoyconfig.RouteMatch{Prefix: "/.pomerium/"},
+					Route: envoyconfig.RouteAction{Cluster: "pomerium-control"},
+				},
+				{
+					Name:  "route-pomerium-path",
+					Match: envoyconfig.RouteMatch{Path: "/.pomerium"},
+					Route: envoyconfig.RouteAction{Cluster: "pomerium-control"},
+				},
+			},
 		}
 		for i, policy := range byHostName[hostname] {
 			rm := envoyconfig.RouteMatch{
@@ -157,25 +180,59 @@ func getClusterName(scheme, host string) string {
 }
 
 func getClustersConfig(options *config.Options) []envoyconfig.Cluster {
-	var clusters []envoyconfig.Cluster
-	clusters = append(clusters, envoyconfig.Cluster{
-		Name:           "pomerium-authorization",
-		Type:           envoyconfig.ClusterDiscoveryTypeLogicalDNS,
+	authenticateURL := options.AuthenticateURL
+	if config.IsAuthenticate(options.Services) {
+		authenticateURL, _ = url.Parse("https://127.0.0.1:5080")
+	}
+
+	authorizeURL := options.AuthorizeURL
+	if config.IsAuthorize(options.Services) {
+		authorizeURL, _ = url.Parse("http://127.0.0.1:5443")
+	}
+
+	cacheURL := options.CacheURL
+	if config.IsCache(options.Services) {
+		cacheURL, _ = url.Parse("http://127.0.0.1:5443")
+	}
+
+	controlURL, _ := url.Parse("https://127.0.0.1:5080")
+
+	clusters := []envoyconfig.Cluster{
+		getServiceClusterConfig("pomerium-authentication", authenticateURL),
+		getServiceClusterConfig("pomerium-authorization", authorizeURL),
+		getServiceClusterConfig("pomerium-cache", cacheURL),
+		getServiceClusterConfig("pomerium-control", controlURL),
+	}
+	clusters = append(clusters, getPoliciesClustersConfig(options.Policies)...)
+	return clusters
+}
+
+func getServiceClusterConfig(name string, u *url.URL) envoyconfig.Cluster {
+	cluster := envoyconfig.Cluster{
+		Name:           name,
 		ConnectTimeout: "30s",
 		LoadAssignment: envoyconfig.ClusterLoadAssignment{
-			ClusterName: "pomerium-authorization",
+			ClusterName: name,
 			Endpoints: []envoyconfig.LocalityLBEndpoint{{
 				LBEndpoints: []envoyconfig.LBEndpoint{{
 					Endpoint: envoyconfig.Endpoint{
-						Address: getAddressFromString(options.AuthorizeURL.Host, getDefaultPort(options.AuthorizeURL.Scheme)),
+						Address: getAddressFromString(u.Host, getDefaultPort(u.Scheme)),
 					},
 				}},
 			}},
 		},
 		HTTP2ProtocolOptions: &envoyconfig.HTTP2ProtocolOptions{},
-	})
-	clusters = append(clusters, getPoliciesClustersConfig(options.Policies)...)
-	return clusters
+	}
+	host, _, _ := net.SplitHostPort(u.Host)
+	if host == "127.0.0.1" {
+		cluster.Type = envoyconfig.ClusterDiscoveryTypeStatic
+	} else {
+		cluster.Type = envoyconfig.ClusterDiscoveryTypeLogicalDNS
+	}
+	if u.Scheme == "https" {
+		cluster.TransportSocket = &envoyconfig.TransportSocket{Name: "tls"}
+	}
+	return cluster
 }
 
 func getPoliciesClustersConfig(policies []config.Policy) []envoyconfig.Cluster {

@@ -31,6 +31,7 @@ type (
 		ConnectTimeout       string                `json:"connect_timeout,omitempty"`
 		LoadAssignment       ClusterLoadAssignment `json:"load_assignment"`
 		HTTP2ProtocolOptions *HTTP2ProtocolOptions `json:"http2_protocol_options,omitempty"`
+		TransportSocket      *TransportSocket      `json:"transport_socket,omitempty"`
 	}
 	ClusterLoadAssignment struct {
 		ClusterName string                       `json:"cluster_name"`

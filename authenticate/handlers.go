@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/gorilla/mux"
 	"github.com/rs/cors"
 
 	"github.com/pomerium/csrf"
@@ -27,6 +28,12 @@ import (
 // Handler returns the authenticate service's handler chain.
 func (a *Authenticate) Handler() http.Handler {
 	r := httputil.NewRouter()
+	a.Mount(r)
+	return r
+}
+
+// Mount mounts the authenticate routes to the given router.
+func (a *Authenticate) Mount(r *mux.Router) {
 	r.Use(middleware.SetHeaders(httputil.HeadersContentSecurityPolicy))
 	r.Use(csrf.Protect(
 		a.cookieSecret,
@@ -67,8 +74,6 @@ func (a *Authenticate) Handler() http.Handler {
 	api := r.PathPrefix("/api").Subrouter()
 	api.Use(sessions.RetrieveSession(a.sessionLoaders...))
 	api.Path("/v1/refresh").Handler(httputil.HandlerFunc(a.RefreshAPI))
-
-	return r
 }
 
 // VerifySession is the middleware used to enforce a valid authentication

@@ -6,13 +6,11 @@ import (
 	"context"
 	"net/url"
 
-	envoy_api_v2_core "github.com/envoyproxy/go-control-plane/envoy/api/v2/core"
 	envoy_service_auth_v2 "github.com/envoyproxy/go-control-plane/envoy/service/auth/v2"
 	envoy_type_v2 "github.com/envoyproxy/go-control-plane/envoy/type"
 	"github.com/pomerium/pomerium/authorize/evaluator"
 	"github.com/pomerium/pomerium/internal/grpc/authorize"
 	"github.com/pomerium/pomerium/internal/telemetry/trace"
-	"github.com/pomerium/pomerium/internal/urlutil"
 	"google.golang.org/genproto/googleapis/rpc/status"
 	"google.golang.org/grpc/codes"
 )
@@ -34,19 +32,45 @@ func (a *Authorize) IsAuthorized(ctx context.Context, in *authorize.IsAuthorized
 	return a.pe.IsAuthorized(ctx, req)
 }
 
+const (
+	signinPath = "/.pomerium/sign_in"
+)
+
 func (a *Authorize) Check(ctx context.Context, in *envoy_service_auth_v2.CheckRequest) (*envoy_service_auth_v2.CheckResponse, error) {
-	a.mu.RLock()
-	authenticateURL := *a.authenticateURL
-	sharedKey := a.sharedKey
-	a.mu.RUnlock()
+	// a.mu.RLock()
+	// authenticateURL := *a.authenticateURL
+	// sharedKey := a.sharedKey
+	// a.mu.RUnlock()
 
-	host := in.GetAttributes().GetRequest().GetHttp().GetHost()
-	path := in.GetAttributes().GetRequest().GetHttp().GetPath()
+	requestURL := getCheckRequestURL(in)
+	req := &evaluator.Request{
+		Header:     getCheckRequestHeaders(in),
+		Host:       in.GetAttributes().GetRequest().GetHttp().GetHost(),
+		Method:     in.GetAttributes().GetRequest().GetHttp().GetMethod(),
+		RequestURI: requestURL,
+		RemoteAddr: in.GetAttributes().GetSource().GetAddress().String(),
+		URL:        requestURL,
+	}
+	reply, err := a.pe.IsAuthorized(ctx, req)
+	if err != nil {
+		return nil, err
+	}
 
-	q := authenticateURL.Query()
-	q.Set(urlutil.QueryRedirectURI, "https://"+host+path)
-	authenticateURL.RawQuery = q.Encode()
-	redirectTo := urlutil.NewSignedURL(sharedKey, &authenticateURL).String()
+	if reply.Allow {
+		return &envoy_service_auth_v2.CheckResponse{
+			Status:       &status.Status{Code: int32(codes.OK), Message: "OK"},
+			HttpResponse: &envoy_service_auth_v2.CheckResponse_OkResponse{OkResponse: &envoy_service_auth_v2.OkHttpResponse{}},
+		}, nil
+	}
+
+	// host := in.GetAttributes().GetRequest().GetHttp().GetHost()
+	// path := in.GetAttributes().GetRequest().GetHttp().GetPath()
+
+	// signinURL := authenticateURL.ResolveReference(&url.URL{Path: signinPath})
+	// q := signinURL.Query()
+	// q.Set(urlutil.QueryRedirectURI, "https://"+host+path)
+	// signinURL.RawQuery = q.Encode()
+	// redirectTo := urlutil.NewSignedURL(sharedKey, signinURL).String()
 
 	return &envoy_service_auth_v2.CheckResponse{
 		Status: &status.Status{
@@ -58,12 +82,12 @@ func (a *Authorize) Check(ctx context.Context, in *envoy_service_auth_v2.CheckRe
 				Status: &envoy_type_v2.HttpStatus{
 					Code: envoy_type_v2.StatusCode_Found,
 				},
-				Headers: []*envoy_api_v2_core.HeaderValueOption{{
-					Header: &envoy_api_v2_core.HeaderValue{
-						Key:   "Location",
-						Value: redirectTo,
-					},
-				}},
+				// Headers: []*envoy_api_v2_core.HeaderValueOption{{
+				// 	Header: &envoy_api_v2_core.HeaderValue{
+				// 		Key:   "Location",
+				// 		Value: redirectTo,
+				// 	},
+				// }},
 			},
 		},
 	}, nil
@@ -91,6 +115,28 @@ func getFullURL(rawurl, host string) string {
 	}
 	if u.Scheme == "" {
 		u.Scheme = "http"
+	}
+	return u.String()
+}
+
+func getCheckRequestHeaders(req *envoy_service_auth_v2.CheckRequest) map[string][]string {
+	h := make(map[string][]string)
+	ch := req.GetAttributes().GetRequest().GetHttp().GetHeaders()
+	if ch != nil {
+		for k, v := range ch {
+			h[k] = []string{v}
+		}
+	}
+	return h
+}
+
+func getCheckRequestURL(req *envoy_service_auth_v2.CheckRequest) string {
+	h := req.GetAttributes().GetRequest().GetHttp()
+	u := &url.URL{
+		Scheme:   h.GetScheme(),
+		Host:     h.GetHost(),
+		Path:     h.GetPath(),
+		RawQuery: h.GetQuery(),
 	}
 	return u.String()
 }
