@@ -2,7 +2,6 @@ package proxy
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"io"
 	"io/ioutil"
@@ -83,61 +82,6 @@ func (p *Proxy) redirectToSignin(w http.ResponseWriter, r *http.Request) error {
 	log.FromRequest(r).Debug().Str("url", signinURL.String()).Msg("proxy: redirectToSignin")
 	httputil.Redirect(w, r, urlutil.NewSignedURL(p.SharedKey, &signinURL).String(), http.StatusFound)
 	p.sessionStore.ClearSession(w, r)
-	return nil
-}
-
-// AuthorizeSession is middleware to enforce a user is authorized for a request.
-// Session state is retrieved from the users's request context.
-func (p *Proxy) AuthorizeSession(next http.Handler) http.Handler {
-	return httputil.HandlerFunc(func(w http.ResponseWriter, r *http.Request) error {
-		ctx, span := trace.StartSpan(r.Context(), "proxy.AuthorizeSession")
-		defer span.End()
-		if err := p.authorize(w, r); err != nil {
-			return err
-		}
-		next.ServeHTTP(w, r.WithContext(ctx))
-		return nil
-	})
-}
-
-func (p *Proxy) authorize(w http.ResponseWriter, r *http.Request) error {
-	ctx, span := trace.StartSpan(r.Context(), "proxy.authorize")
-	defer span.End()
-	jwt, err := sessions.FromContext(ctx)
-	if err != nil {
-		return httputil.NewError(http.StatusInternalServerError, err)
-	}
-	authz, err := p.AuthorizeClient.Authorize(ctx, jwt, r)
-	if err != nil {
-		return httputil.NewError(http.StatusInternalServerError, err)
-	}
-	if authz.GetSessionExpired() {
-		newJwt, err := p.refresh(ctx, jwt)
-		if err != nil {
-			p.sessionStore.ClearSession(w, r)
-			log.FromRequest(r).Warn().Err(err).Msg("proxy: refresh failed")
-			return p.redirectToSignin(w, r)
-		}
-		if err = p.sessionStore.SaveSession(w, r, newJwt); err != nil {
-			return httputil.NewError(http.StatusUnauthorized, err)
-		}
-
-		authz, err = p.AuthorizeClient.Authorize(ctx, newJwt, r)
-		if err != nil {
-			return httputil.NewError(http.StatusUnauthorized, err)
-		}
-	}
-	if !authz.GetAllow() {
-		log.FromRequest(r).Warn().
-			Strs("reason", authz.GetDenyReasons()).
-			Bool("allow", authz.GetAllow()).
-			Bool("expired", authz.GetSessionExpired()).
-			Msg("proxy/authorize: deny")
-		return httputil.NewError(http.StatusForbidden, errors.New("request denied"))
-	}
-
-	r.Header.Set(httputil.HeaderPomeriumJWTAssertion, authz.GetSignedJwt())
-	w.Header().Set(httputil.HeaderPomeriumJWTAssertion, authz.GetSignedJwt())
 	return nil
 }
 

@@ -5,10 +5,19 @@ import data.shared_key
 
 default allow = false
 
+# allow public
+allow {
+	some route
+	allowed_route(input.url, route_policies[route])
+	trace(sprintf("allow.public: %v", [route_policies[route]]))
+	route_policies[route].AllowPublicUnauthenticatedAccess == true
+}
+
 # allow by email
 allow {
 	some route
 	allowed_route(input.url, route_policies[route])
+	trace(sprintf("allow.email: %v", [route_policies[route]]))
 	token.payload.email = route_policies[route].allowed_users[_]
 	token.valid
 	count(deny)==0
@@ -18,6 +27,7 @@ allow {
 allow {
 	some route
 	allowed_route(input.url, route_policies[route])
+	trace(sprintf("allow.group: %v", [route_policies[route]]))
 	some group
 	token.payload.groups[group] == route_policies[route].allowed_groups[_]
 	token.valid
@@ -28,6 +38,7 @@ allow {
 allow {
 	some route
 	allowed_route(input.url, route_policies[route])
+	trace(sprintf("allow.impoersonate_email: %v", [route_policies[route]]))
 	token.payload.impersonate_email = route_policies[route].allowed_users[_]
 	token.valid
 	count(deny)==0
@@ -37,6 +48,7 @@ allow {
 allow {
 	some route
 	allowed_route(input.url, route_policies[route])
+	trace(sprintf("allow.impersonate_group: %v", [route_policies[route]]))
 	some group
 	token.payload.impersonate_groups[group] == route_policies[route].allowed_groups[_]
 	token.valid

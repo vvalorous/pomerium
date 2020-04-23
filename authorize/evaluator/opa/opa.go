@@ -9,11 +9,13 @@ import (
 	"errors"
 	"fmt"
 	"io/ioutil"
+	"os"
 	"sync"
 
 	"github.com/open-policy-agent/opa/rego"
 	"github.com/open-policy-agent/opa/storage"
 	"github.com/open-policy-agent/opa/storage/inmem"
+	"github.com/open-policy-agent/opa/topdown"
 	"github.com/rakyll/statik/fs"
 
 	"github.com/pomerium/pomerium/authorize/evaluator"
@@ -177,12 +179,14 @@ func decisionFromInterface(i interface{}) (*pb.IsAuthorizedReply, error) {
 func (pe *PolicyEvaluator) runBoolQuery(ctx context.Context, input interface{}, q rego.PreparedEvalQuery) (*pb.IsAuthorizedReply, error) {
 	pe.mu.RLock()
 	defer pe.mu.RUnlock()
-	rs, err := q.Eval(ctx, rego.EvalInput(input))
+	buf := topdown.NewBufferTracer()
+	rs, err := q.Eval(ctx, rego.EvalInput(input), rego.EvalTracer(buf))
 	if err != nil {
 		return nil, fmt.Errorf("eval query: %w", err)
 	} else if len(rs) == 0 {
 		return nil, fmt.Errorf("empty eval result set %v", rs)
 	}
+	topdown.PrettyTraceWithLocation(os.Stdout, *buf)
 	bindings := rs[0].Bindings.WithoutWildcards()["result"]
 	return decisionFromInterface(bindings)
 }

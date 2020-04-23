@@ -115,7 +115,6 @@ func (p *Proxy) Verify(verifyOnly bool) http.Handler {
 		if err != nil {
 			return httputil.NewError(http.StatusBadRequest, err)
 		}
-		originalRequest := p.getOriginalRequest(r, uri)
 
 		if _, err := sessions.FromContext(r.Context()); err != nil {
 			if verifyOnly {
@@ -129,10 +128,6 @@ func (p *Proxy) Verify(verifyOnly bool) http.Handler {
 			authN.RawQuery = q.Encode()
 			httputil.Redirect(w, r, urlutil.NewSignedURL(p.SharedKey, &authN).String(), http.StatusFound)
 			return nil
-		}
-
-		if err := p.authorize(w, originalRequest); err != nil {
-			return err
 		}
 
 		w.Header().Set("Content-Type", "text/plain; charset=utf-8")

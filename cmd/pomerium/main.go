@@ -5,9 +5,7 @@ import (
 	"flag"
 	"fmt"
 	"net"
-	"net/http"
 	"sync"
-	"time"
 
 	envoy_service_auth_v2 "github.com/envoyproxy/go-control-plane/envoy/service/auth/v2"
 	"github.com/fsnotify/fsnotify"
@@ -17,13 +15,11 @@ import (
 	"github.com/pomerium/pomerium/config"
 	"github.com/pomerium/pomerium/internal/controlplane"
 	"github.com/pomerium/pomerium/internal/envoy"
-	"github.com/pomerium/pomerium/internal/frontend"
 	pgrpc "github.com/pomerium/pomerium/internal/grpc"
 	pbAuthorize "github.com/pomerium/pomerium/internal/grpc/authorize"
 	pbCache "github.com/pomerium/pomerium/internal/grpc/cache"
 	"github.com/pomerium/pomerium/internal/httputil"
 	"github.com/pomerium/pomerium/internal/log"
-	"github.com/pomerium/pomerium/internal/middleware"
 	"github.com/pomerium/pomerium/internal/telemetry/metrics"
 	"github.com/pomerium/pomerium/internal/telemetry/trace"
 	"github.com/pomerium/pomerium/internal/urlutil"
@@ -99,6 +95,8 @@ func run() error {
 			return fmt.Errorf("error creating authorize service: %w", err)
 		}
 		pbAuthorize.RegisterAuthorizerServer(controlPlane.GRPCServer, svc)
+		envoy_service_auth_v2.RegisterAuthorizationServer(controlPlane.GRPCServer, svc)
+
 		log.Info().Msg("enabled authorize service")
 
 		optionsUpdaters = append(optionsUpdaters, svc)
@@ -116,6 +114,14 @@ func run() error {
 		defer svc.Close()
 		pbCache.RegisterCacheServer(controlPlane.GRPCServer, svc)
 		log.Info().Msg("enabled cache service")
+	}
+
+	if config.IsProxy(opt.Services) {
+		svc, err := proxy.New(*opt)
+		if err != nil {
+			return fmt.Errorf("error creating proxy service: %w", err)
+		}
+		controlPlane.HTTPRouter.PathPrefix("/").Handler(svc)
 	}
 
 	// start the config change listener
@@ -246,7 +252,6 @@ func newGRPCServer(opt config.Options, as *authorize.Authorize, cs *cache.Cache,
 	regFn := func(s *grpc.Server) {
 		if as != nil {
 			pbAuthorize.RegisterAuthorizerServer(s, as)
-			envoy_service_auth_v2.RegisterAuthorizationServer(s, as)
 		}
 		if cs != nil {
 			pbCache.RegisterCacheServer(s, cs)
@@ -282,38 +287,6 @@ func newProxyService(opt config.Options, r *mux.Router) (*proxy.Proxy, error) {
 	}
 	r.PathPrefix("/").Handler(service)
 	return service, nil
-}
-
-func newGlobalRouter(o *config.Options) *mux.Router {
-	mux := httputil.NewRouter()
-	mux.SkipClean(true)
-	mux.Use(metrics.HTTPMetricsHandler(o.Services))
-	mux.Use(log.NewHandler(log.Logger))
-	mux.Use(log.AccessHandler(func(r *http.Request, status, size int, duration time.Duration) {
-		log.FromRequest(r).Debug().
-			Dur("duration", duration).
-			Int("size", size).
-			Int("status", status).
-			Str("method", r.Method).
-			Str("service", o.Services).
-			Str("host", r.Host).
-			Str("path", r.URL.String()).
-			Msg("http-request")
-	}))
-	if len(o.Headers) != 0 {
-		mux.Use(middleware.SetHeaders(o.Headers))
-	}
-	mux.Use(log.HeadersHandler(httputil.HeadersXForwarded))
-	mux.Use(log.RemoteAddrHandler("ip"))
-	mux.Use(log.UserAgentHandler("user_agent"))
-	mux.Use(log.RefererHandler("referer"))
-	mux.Use(log.RequestIDHandler("req_id", "Request-Id"))
-	mux.Use(middleware.Healthcheck("/ping", version.UserAgent()))
-	mux.HandleFunc("/healthz", httputil.HealthCheck)
-	mux.HandleFunc("/ping", httputil.HealthCheck)
-	mux.PathPrefix("/.pomerium/assets/").Handler(http.StripPrefix("/.pomerium/assets/", frontend.MustAssetHandler()))
-
-	return mux
 }
 
 func setupMetrics(opt *config.Options, wg *sync.WaitGroup) error {

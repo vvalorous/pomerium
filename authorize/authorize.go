@@ -6,8 +6,7 @@ import (
 	"context"
 	"encoding/base64"
 	"fmt"
-	"net/url"
-	"sync"
+	"sync/atomic"
 
 	"gopkg.in/square/go-jose.v2"
 
@@ -24,9 +23,7 @@ import (
 type Authorize struct {
 	pe evaluator.Evaluator
 
-	mu              sync.RWMutex
-	authenticateURL *url.URL
-	sharedKey       string
+	currentOptions atomic.Value
 }
 
 // New validates and creates a new Authorize service from a set of config options.
@@ -35,6 +32,7 @@ func New(opts config.Options) (*Authorize, error) {
 		return nil, fmt.Errorf("authorize: bad options: %w", err)
 	}
 	var a Authorize
+	a.currentOptions.Store(config.Options{})
 	err := a.UpdateOptions(opts)
 	if err != nil {
 		return nil, err
@@ -96,11 +94,7 @@ func newPolicyEvaluator(opts *config.Options) (evaluator.Evaluator, error) {
 // structures based on config.Options
 func (a *Authorize) UpdateOptions(opts config.Options) error {
 	log.Info().Str("checksum", fmt.Sprintf("%x", opts.Checksum())).Msg("authorize: updating options")
-
-	a.mu.Lock()
-	a.authenticateURL = opts.AuthenticateURL
-	a.sharedKey = opts.SharedKey
-	a.mu.Unlock()
+	a.currentOptions.Store(opts)
 
 	var err error
 	if a.pe, err = newPolicyEvaluator(&opts); err != nil {
