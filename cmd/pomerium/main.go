@@ -7,15 +7,12 @@ import (
 	"net"
 	"sync"
 
-	envoy_service_auth_v2 "github.com/envoyproxy/go-control-plane/envoy/service/auth/v2"
-	"github.com/fsnotify/fsnotify"
 	"github.com/pomerium/pomerium/authenticate"
 	"github.com/pomerium/pomerium/authorize"
 	"github.com/pomerium/pomerium/cache"
 	"github.com/pomerium/pomerium/config"
 	"github.com/pomerium/pomerium/internal/controlplane"
 	"github.com/pomerium/pomerium/internal/envoy"
-	pgrpc "github.com/pomerium/pomerium/internal/grpc"
 	pbAuthorize "github.com/pomerium/pomerium/internal/grpc/authorize"
 	pbCache "github.com/pomerium/pomerium/internal/grpc/cache"
 	"github.com/pomerium/pomerium/internal/httputil"
@@ -25,11 +22,10 @@ import (
 	"github.com/pomerium/pomerium/internal/urlutil"
 	"github.com/pomerium/pomerium/internal/version"
 	"github.com/pomerium/pomerium/proxy"
-	"golang.org/x/sync/errgroup"
 
-	"github.com/gorilla/mux"
-	"google.golang.org/grpc"
-	"google.golang.org/grpc/keepalive"
+	envoy_service_auth_v2 "github.com/envoyproxy/go-control-plane/envoy/service/auth/v2"
+	"github.com/fsnotify/fsnotify"
+	"golang.org/x/sync/errgroup"
 )
 
 var versionFlag = flag.Bool("version", false, "prints the version")
@@ -139,154 +135,6 @@ func run() error {
 		return envoyServer.Run(ctx)
 	})
 	return eg.Wait()
-
-	// since we can have multiple listeners, we create a wait group
-	// var wg sync.WaitGroup
-	// if err := setupMetrics(opt, &wg); err != nil {
-	// 	return err
-	// }
-	// if err := setupTracing(opt); err != nil {
-	// 	return err
-	// }
-	// if err := setupHTTPRedirectServer(opt, &wg); err != nil {
-	// 	return err
-	// }
-
-	// r := newGlobalRouter(opt)
-	// _, err = newAuthenticateService(*opt, r)
-	// if err != nil {
-	// 	return err
-	// }
-	// authz, err := newAuthorizeService(*opt)
-	// if err != nil {
-	// 	return err
-	// }
-	// optionsUpdaters = append(optionsUpdaters, authz)
-
-	// cacheSvc, err := newCacheService(*opt)
-	// if err != nil {
-	// 	return err
-	// }
-	// if cacheSvc != nil {
-	// 	defer cacheSvc.Close()
-	// }
-
-	// // new envoy mode!
-	// if true {
-	// 	hopt := httpServerOptions(opt)
-	// 	hopt.Addr = "127.0.0.1:5080"
-	// 	controlServer, err := httputil.NewServer(hopt, r, &wg)
-	// 	if err != nil {
-	// 		return err
-	// 	}
-	// 	go httputil.Shutdown(controlServer)
-
-	// 	srv, err := envoy.NewServer(opt, &wg)
-	// 	if err != nil {
-	// 		return err
-	// 	}
-	// 	optionsUpdaters = append(optionsUpdaters, srv)
-	// } else {
-	// 	proxy, err := newProxyService(*opt, r)
-	// 	if err != nil {
-	// 		return err
-	// 	}
-	// 	if proxy != nil {
-	// 		defer proxy.AuthorizeClient.Close()
-	// 	}
-	// 	optionsUpdaters = append(optionsUpdaters, proxy)
-
-	// 	srv, err := httputil.NewServer(httpServerOptions(opt), r, &wg)
-	// 	if err != nil {
-	// 		return err
-	// 	}
-	// 	go httputil.Shutdown(srv)
-	// }
-
-	// if err := newGRPCServer(*opt, authz, cacheSvc, &wg); err != nil {
-	// 	return err
-	// }
-
-	// opt.OnConfigChange(func(e fsnotify.Event) {
-	// 	log.Info().Str("file", e.Name).Msg("cmd/pomerium: config file changed")
-	// 	opt = config.HandleConfigUpdate(*configFile, opt, optionsUpdaters)
-	// })
-
-	// // Blocks and waits until ALL WaitGroup members have signaled completion
-	// wg.Wait()
-	// return nil
-}
-
-func newAuthenticateService(opt config.Options, r *mux.Router) (*authenticate.Authenticate, error) {
-	if !config.IsAuthenticate(opt.Services) {
-		return nil, nil
-	}
-	service, err := authenticate.New(opt)
-	if err != nil {
-		return nil, err
-	}
-	sr := r.Host(urlutil.StripPort(opt.AuthenticateURL.Host)).Subrouter()
-	sr.PathPrefix("/").Handler(service.Handler())
-
-	return service, nil
-}
-
-func newAuthorizeService(opt config.Options) (*authorize.Authorize, error) {
-	if !config.IsAuthorize(opt.Services) {
-		return nil, nil
-	}
-	return authorize.New(opt)
-}
-
-func newCacheService(opt config.Options) (*cache.Cache, error) {
-	if !config.IsCache(opt.Services) {
-		return nil, nil
-	}
-	return cache.New(opt)
-}
-
-func newGRPCServer(opt config.Options, as *authorize.Authorize, cs *cache.Cache, wg *sync.WaitGroup) error {
-	if as == nil && cs == nil {
-		return nil
-	}
-	regFn := func(s *grpc.Server) {
-		if as != nil {
-			pbAuthorize.RegisterAuthorizerServer(s, as)
-		}
-		if cs != nil {
-			pbCache.RegisterCacheServer(s, cs)
-
-		}
-	}
-	so := &pgrpc.ServerOptions{
-		Addr:        opt.GRPCAddr,
-		ServiceName: opt.Services,
-		KeepaliveParams: keepalive.ServerParameters{
-			MaxConnectionAge:      opt.GRPCServerMaxConnectionAge,
-			MaxConnectionAgeGrace: opt.GRPCServerMaxConnectionAgeGrace,
-		},
-	}
-	if !opt.GRPCInsecure {
-		so.TLSCertificate = opt.TLSCertificate
-	}
-	grpcSrv, err := pgrpc.NewServer(so, regFn, wg)
-	if err != nil {
-		return err
-	}
-	go pgrpc.Shutdown(grpcSrv)
-	return nil
-}
-
-func newProxyService(opt config.Options, r *mux.Router) (*proxy.Proxy, error) {
-	if !config.IsProxy(opt.Services) {
-		return nil, nil
-	}
-	service, err := proxy.New(opt)
-	if err != nil {
-		return nil, err
-	}
-	r.PathPrefix("/").Handler(service)
-	return service, nil
 }
 
 func setupMetrics(opt *config.Options, wg *sync.WaitGroup) error {

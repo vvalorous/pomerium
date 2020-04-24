@@ -136,10 +136,3 @@ func (p *Proxy) Verify(verifyOnly bool) http.Handler {
 		return nil
 	})
 }
-
-func (p *Proxy) getOriginalRequest(r *http.Request, originalURL *url.URL) *http.Request {
-	originalRequest := r.Clone(r.Context())
-	originalRequest.Host = originalURL.Host
-	originalRequest.URL = originalURL
-	return originalRequest
-}

@@ -68,6 +68,7 @@ func (p *Proxy) RobotsTxt(w http.ResponseWriter, _ *http.Request) {
 	fmt.Fprintf(w, "User-agent: *\nDisallow: /")
 }
 
+// SignIn redircts /.pomerium/sign_in to the authentication server.
 func (p *Proxy) SignIn(w http.ResponseWriter, r *http.Request) {
 	redirectURL := &url.URL{Scheme: "https", Host: r.Host, Path: "/"}
 	if uri, err := urlutil.ParseAndValidateURL(r.FormValue(urlutil.QueryRedirectURI)); err == nil && uri.String() != "" {

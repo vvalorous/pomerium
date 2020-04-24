@@ -1,10 +1,7 @@
 package proxy
 
 import (
-	"context"
 	"fmt"
-	"io"
-	"io/ioutil"
 	"net/http"
 	"strings"
 
@@ -31,47 +28,6 @@ func (p *Proxy) AuthenticateSession(next http.Handler) http.Handler {
 		next.ServeHTTP(w, r.WithContext(ctx))
 		return nil
 	})
-}
-
-func (p *Proxy) refresh(ctx context.Context, oldSession string) (string, error) {
-	ctx, span := trace.StartSpan(ctx, "proxy.AuthenticateSession/refresh")
-	defer span.End()
-	s := &sessions.State{}
-	if err := p.encoder.Unmarshal([]byte(oldSession), s); err != nil {
-		return "", httputil.NewError(http.StatusBadRequest, err)
-	}
-
-	// 1 - build a signed url to call refresh on authenticate service
-	refreshURI := *p.authenticateRefreshURL
-	q := refreshURI.Query()
-	q.Set(urlutil.QueryAccessTokenID, s.AccessTokenID)          // hash value points to parent token
-	q.Set(urlutil.QueryAudience, strings.Join(s.Audience, ",")) // request's audience, this route
-	refreshURI.RawQuery = q.Encode()
-	signedRefreshURL := urlutil.NewSignedURL(p.SharedKey, &refreshURI).String()
-
-	// 2 -  http call to authenticate service
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, signedRefreshURL, nil)
-	if err != nil {
-		return "", fmt.Errorf("proxy: refresh request: %v", err)
-	}
-
-	req.Header.Set("X-Requested-With", "XmlHttpRequest")
-	req.Header.Set("Accept", "application/json")
-	res, err := httputil.DefaultClient.Do(req)
-	if err != nil {
-		return "", fmt.Errorf("proxy: client err %s: %w", signedRefreshURL, err)
-	}
-	defer res.Body.Close()
-	newJwt, err := ioutil.ReadAll(io.LimitReader(res.Body, 4<<10))
-	if err != nil {
-		return "", err
-	}
-	// auth couldn't refersh the session, delete the session and reload via 302
-	if res.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("proxy: backend refresh failed: %s", newJwt)
-	}
-
-	return string(newJwt), nil
 }
 
 func (p *Proxy) redirectToSignin(w http.ResponseWriter, r *http.Request) error {

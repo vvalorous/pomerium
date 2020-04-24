@@ -2,6 +2,7 @@ package controlplane
 
 import (
 	"fmt"
+	"google.golang.org/grpc/status"
 	"net"
 	"net/url"
 	"os"
@@ -27,7 +28,6 @@ import (
 	"github.com/pomerium/pomerium/internal/log"
 	"github.com/pomerium/pomerium/internal/urlutil"
 	"golang.org/x/sync/errgroup"
-	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 )
 
@@ -131,7 +131,7 @@ func (srv *Server) buildDiscoveryResponse(version string, typeURL string, option
 		for i, listener := range listeners {
 			a, err := ptypes.MarshalAny(listener)
 			if err != nil {
-				return nil, grpc.Errorf(codes.Internal, "error marshaling type to any: %v", err)
+				return nil, status.Errorf(codes.Internal, "error marshaling type to any: %v", err)
 			}
 			anys[i] = a
 		}
@@ -146,7 +146,7 @@ func (srv *Server) buildDiscoveryResponse(version string, typeURL string, option
 		for i, cluster := range clusters {
 			a, err := ptypes.MarshalAny(cluster)
 			if err != nil {
-				return nil, grpc.Errorf(codes.Internal, "error marshaling type to any: %v", err)
+				return nil, status.Errorf(codes.Internal, "error marshaling type to any: %v", err)
 			}
 			anys[i] = a
 		}
@@ -156,158 +156,15 @@ func (srv *Server) buildDiscoveryResponse(version string, typeURL string, option
 			TypeUrl:     typeURL,
 		}, nil
 	default:
-		return nil, grpc.Errorf(codes.Internal, "received request for unknown discovery request type: %s", typeURL)
+		return nil, status.Errorf(codes.Internal, "received request for unknown discovery request type: %s", typeURL)
 	}
 }
 
 func (srv *Server) buildListeners(options config.Options) []*envoy_config_listener_v3.Listener {
 	var listeners []*envoy_config_listener_v3.Listener
 
-	// address => insecure
-	liTypes := map[string]bool{}
 	if config.IsAuthenticate(options.Services) || config.IsProxy(options.Services) {
-		liTypes[options.Addr] = options.InsecureServer
-	}
-	if config.IsAuthorize(options.Services) || config.IsCache(options.Services) {
-		//liTypes[options.GRPCAddr] = options.GRPCInsecure
-	}
-	var addrs []string
-	for addr := range liTypes {
-		addrs = append(addrs, addr)
-	}
-	sort.Strings(addrs)
-
-	for i, addr := range addrs {
-		isInsecure := liTypes[addr]
-
-		var virtualHosts []*envoy_config_route_v3.VirtualHost
-		for _, domain := range srv.getAllRouteableDomains(options, addr) {
-			vh := &envoy_config_route_v3.VirtualHost{
-				Name:    domain,
-				Domains: []string{domain},
-			}
-
-			if addr == options.GRPCAddr {
-				// if this is a gRPC service domain and we're supposed to handle that, add those routes
-				if (config.IsAuthorize(options.Services) && domain == urlutil.StripPort(options.AuthorizeURL.Host)) ||
-					(config.IsCache(options.Services) && domain == urlutil.StripPort(options.CacheURL.Host)) {
-					vh.Routes = append(vh.Routes, srv.buildGRPCRoutes(options)...)
-				}
-			}
-
-			if addr == options.Addr {
-				// these routes match /.pomerium/... and similar paths
-				vh.Routes = append(vh.Routes, srv.buildPomeriumHTTPRoutes(options, domain)...)
-
-				// if we're the proxy, add all the policy routes
-				if config.IsProxy(options.Services) {
-					vh.Routes = append(vh.Routes, srv.buildPolicyRoutes(options, domain)...)
-				}
-			}
-
-			if len(vh.Routes) > 0 {
-				virtualHosts = append(virtualHosts, vh)
-			}
-		}
-
-		extAuthZ, _ := ptypes.MarshalAny(&envoy_extensions_filters_http_ext_authz_v3.ExtAuthz{
-			Services: &envoy_extensions_filters_http_ext_authz_v3.ExtAuthz_GrpcService{
-				GrpcService: &envoy_config_core_v3.GrpcService{
-					TargetSpecifier: &envoy_config_core_v3.GrpcService_EnvoyGrpc_{
-						EnvoyGrpc: &envoy_config_core_v3.GrpcService_EnvoyGrpc{
-							ClusterName: "pomerium-authz",
-						},
-					},
-				},
-			},
-		})
-
-		tc, _ := ptypes.MarshalAny(&envoy_extensions_filters_network_http_connection_manager_v3.HttpConnectionManager{
-			CodecType:  envoy_extensions_filters_network_http_connection_manager_v3.HttpConnectionManager_AUTO,
-			StatPrefix: "ingress",
-			RouteSpecifier: &envoy_extensions_filters_network_http_connection_manager_v3.HttpConnectionManager_RouteConfig{
-				RouteConfig: &envoy_config_route_v3.RouteConfiguration{
-					Name:         "main",
-					VirtualHosts: virtualHosts,
-				},
-			},
-			HttpFilters: []*envoy_extensions_filters_network_http_connection_manager_v3.HttpFilter{
-				{
-					Name: "envoy.filters.http.ext_authz",
-					ConfigType: &envoy_extensions_filters_network_http_connection_manager_v3.HttpFilter_TypedConfig{
-						TypedConfig: extAuthZ,
-					},
-				},
-				{
-					Name: "envoy.filters.http.router",
-				},
-			},
-		})
-
-		li := &envoy_config_listener_v3.Listener{
-			Name: fmt.Sprintf("ingress-%d", i),
-			FilterChains: []*envoy_config_listener_v3.FilterChain{
-				{
-					Filters: []*envoy_config_listener_v3.Filter{
-						{
-							Name: "envoy.filters.network.http_connection_manager",
-							ConfigType: &envoy_config_listener_v3.Filter_TypedConfig{
-								TypedConfig: tc,
-							},
-						},
-					},
-				},
-			},
-		}
-		if isInsecure {
-			li.Address = buildAddress(addr, 80)
-		} else {
-			li.Address = buildAddress(addr, 443)
-
-			var cert envoy_extensions_transport_sockets_tls_v3.TlsCertificate
-			if options.Cert != "" {
-				cert.CertificateChain = &envoy_config_core_v3.DataSource{
-					Specifier: &envoy_config_core_v3.DataSource_InlineString{
-						InlineString: options.Cert,
-					},
-				}
-			} else {
-				cert.CertificateChain = &envoy_config_core_v3.DataSource{
-					Specifier: &envoy_config_core_v3.DataSource_Filename{
-						Filename: getAbsoluteFilePath(options.CertFile),
-					},
-				}
-			}
-			if options.Key != "" {
-				cert.PrivateKey = &envoy_config_core_v3.DataSource{
-					Specifier: &envoy_config_core_v3.DataSource_InlineString{
-						InlineString: options.Key,
-					},
-				}
-			} else {
-				cert.PrivateKey = &envoy_config_core_v3.DataSource{
-					Specifier: &envoy_config_core_v3.DataSource_Filename{
-						Filename: getAbsoluteFilePath(options.KeyFile),
-					},
-				}
-			}
-
-			tlsConfig, _ := ptypes.MarshalAny(&envoy_extensions_transport_sockets_tls_v3.DownstreamTlsContext{
-				CommonTlsContext: &envoy_extensions_transport_sockets_tls_v3.CommonTlsContext{
-					TlsCertificates: []*envoy_extensions_transport_sockets_tls_v3.TlsCertificate{
-						&cert,
-					},
-				},
-			})
-
-			li.FilterChains[0].TransportSocket = &envoy_config_core_v3.TransportSocket{
-				Name: "tls",
-				ConfigType: &envoy_config_core_v3.TransportSocket_TypedConfig{
-					TypedConfig: tlsConfig,
-				},
-			}
-		}
-		listeners = append(listeners, li)
+		listeners = append(listeners, srv.buildHTTPListener(options))
 	}
 
 	if config.IsAuthorize(options.Services) || config.IsCache(options.Services) {
@@ -353,6 +210,98 @@ func (srv *Server) buildDownstreamTLSContext(options config.Options) *envoy_exte
 			},
 		},
 	}
+}
+
+func (srv *Server) buildHTTPListener(options config.Options) *envoy_config_listener_v3.Listener {
+	defaultPort := 80
+	var transportSocket *envoy_config_core_v3.TransportSocket
+	if !options.InsecureServer {
+		defaultPort = 443
+		tlsConfig, _ := ptypes.MarshalAny(srv.buildDownstreamTLSContext(options))
+		transportSocket = &envoy_config_core_v3.TransportSocket{
+			Name: "tls",
+			ConfigType: &envoy_config_core_v3.TransportSocket_TypedConfig{
+				TypedConfig: tlsConfig,
+			},
+		}
+	}
+
+	var virtualHosts []*envoy_config_route_v3.VirtualHost
+	for _, domain := range srv.getAllRouteableDomains(options, options.Addr) {
+		vh := &envoy_config_route_v3.VirtualHost{
+			Name:    domain,
+			Domains: []string{domain},
+		}
+
+		if options.Addr == options.GRPCAddr {
+			// if this is a gRPC service domain and we're supposed to handle that, add those routes
+			if (config.IsAuthorize(options.Services) && domain == urlutil.StripPort(options.AuthorizeURL.Host)) ||
+				(config.IsCache(options.Services) && domain == urlutil.StripPort(options.CacheURL.Host)) {
+				vh.Routes = append(vh.Routes, srv.buildGRPCRoutes(options)...)
+			}
+		}
+
+		// these routes match /.pomerium/... and similar paths
+		vh.Routes = append(vh.Routes, srv.buildPomeriumHTTPRoutes(options, domain)...)
+
+		// if we're the proxy, add all the policy routes
+		if config.IsProxy(options.Services) {
+			vh.Routes = append(vh.Routes, srv.buildPolicyRoutes(options, domain)...)
+		}
+
+		if len(vh.Routes) > 0 {
+			virtualHosts = append(virtualHosts, vh)
+		}
+	}
+
+	extAuthZ, _ := ptypes.MarshalAny(&envoy_extensions_filters_http_ext_authz_v3.ExtAuthz{
+		Services: &envoy_extensions_filters_http_ext_authz_v3.ExtAuthz_GrpcService{
+			GrpcService: &envoy_config_core_v3.GrpcService{
+				TargetSpecifier: &envoy_config_core_v3.GrpcService_EnvoyGrpc_{
+					EnvoyGrpc: &envoy_config_core_v3.GrpcService_EnvoyGrpc{
+						ClusterName: "pomerium-authz",
+					},
+				},
+			},
+		},
+	})
+
+	tc, _ := ptypes.MarshalAny(&envoy_extensions_filters_network_http_connection_manager_v3.HttpConnectionManager{
+		CodecType:  envoy_extensions_filters_network_http_connection_manager_v3.HttpConnectionManager_AUTO,
+		StatPrefix: "ingress",
+		RouteSpecifier: &envoy_extensions_filters_network_http_connection_manager_v3.HttpConnectionManager_RouteConfig{
+			RouteConfig: &envoy_config_route_v3.RouteConfiguration{
+				Name:         "main",
+				VirtualHosts: virtualHosts,
+			},
+		},
+		HttpFilters: []*envoy_extensions_filters_network_http_connection_manager_v3.HttpFilter{
+			{
+				Name: "envoy.filters.http.ext_authz",
+				ConfigType: &envoy_extensions_filters_network_http_connection_manager_v3.HttpFilter_TypedConfig{
+					TypedConfig: extAuthZ,
+				},
+			},
+			{
+				Name: "envoy.filters.http.router",
+			},
+		},
+	})
+
+	li := &envoy_config_listener_v3.Listener{
+		Name:    "http-ingress",
+		Address: buildAddress(options.Addr, defaultPort),
+		FilterChains: []*envoy_config_listener_v3.FilterChain{{
+			Filters: []*envoy_config_listener_v3.Filter{{
+				Name: "envoy.filters.network.http_connection_manager",
+				ConfigType: &envoy_config_listener_v3.Filter_TypedConfig{
+					TypedConfig: tc,
+				},
+			}},
+			TransportSocket: transportSocket,
+		}},
+	}
+	return li
 }
 
 func (srv *Server) buildGRPCListener(options config.Options) *envoy_config_listener_v3.Listener {
