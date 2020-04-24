@@ -46,6 +46,7 @@ func NewServer() (*Server, error) {
 	}
 	srv.GRPCServer = grpc.NewServer()
 	srv.registerXDSHandlers()
+	srv.registerAccessLogHandlers()
 
 	// setup HTTP
 	srv.HTTPListener, err = net.Listen("tcp4", "127.0.0.1:0")

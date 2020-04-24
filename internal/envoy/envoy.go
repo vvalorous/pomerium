@@ -119,7 +119,7 @@ static_resources:
 }
 
 func (srv *Server) handleLogs(stdout io.ReadCloser) {
-	fileNameAndNumberRE := regexp.MustCompile(`^(\[.?:[0-9]+\]) (.*)$`)
+	fileNameAndNumberRE := regexp.MustCompile(`^(\[[^:]+:[0-9]+\])\s(.*)$`)
 
 	s := bufio.NewScanner(stdout)
 	for s.Scan() {

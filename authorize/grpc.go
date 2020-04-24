@@ -41,7 +41,10 @@ func (a *Authorize) IsAuthorized(ctx context.Context, in *authorize.IsAuthorized
 }
 
 func (a *Authorize) Check(ctx context.Context, in *envoy_service_auth_v2.CheckRequest) (*envoy_service_auth_v2.CheckResponse, error) {
-	log.Info().Interface("in", in).Msg("checking authorization")
+	ctx, span := trace.StartSpan(ctx, "authorize.grpc.Check")
+	defer span.End()
+
+	hattrs := in.GetAttributes().GetRequest().GetHttp()
 
 	hdrs := getCheckRequestHeaders(in)
 	sess, sesserr := a.loadSessionFromCheckRequest(in)
@@ -49,18 +52,31 @@ func (a *Authorize) Check(ctx context.Context, in *envoy_service_auth_v2.CheckRe
 	req := &evaluator.Request{
 		User:       sess,
 		Header:     hdrs,
-		Host:       in.GetAttributes().GetRequest().GetHttp().GetHost(),
-		Method:     in.GetAttributes().GetRequest().GetHttp().GetMethod(),
+		Host:       hattrs.GetHost(),
+		Method:     hattrs.GetMethod(),
 		RequestURI: requestURL.String(),
 		RemoteAddr: in.GetAttributes().GetSource().GetAddress().String(),
 		URL:        requestURL.String(),
 	}
-	log.Info().Interface("request", req).Msg("is authorized???")
 	reply, err := a.pe.IsAuthorized(ctx, req)
 	if err != nil {
 		return nil, err
 	}
-	log.Info().Interface("reply", reply).Msg("is authorized???")
+
+	evt := log.Info().Str("service", "authorize")
+	// request
+	evt = evt.Str("request-id", hattrs.GetId())
+	evt = evt.Str("method", hattrs.GetMethod())
+	evt = evt.Str("path", hattrs.GetPath())
+	evt = evt.Str("host", hattrs.GetHost())
+	evt = evt.Str("query", hattrs.GetQuery())
+	// reply
+	evt = evt.Bool("allow", reply.GetAllow())
+	evt = evt.Bool("session-expired", reply.GetSessionExpired())
+	evt = evt.Strs("deny-reasons", reply.GetDenyReasons())
+	evt = evt.Str("email", reply.GetEmail())
+	evt = evt.Strs("groups", reply.GetGroups())
+	evt.Msg("authorize check")
 
 	if reply.Allow {
 		return &envoy_service_auth_v2.CheckResponse{

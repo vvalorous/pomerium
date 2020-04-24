@@ -12,22 +12,23 @@ import (
 	"time"
 
 	"github.com/pomerium/pomerium/config"
-	"github.com/pomerium/pomerium/internal/log"
 	"github.com/pomerium/pomerium/internal/urlutil"
 
+	envoy_config_accesslog_v3 "github.com/envoyproxy/go-control-plane/envoy/config/accesslog/v3"
 	envoy_config_cluster_v3 "github.com/envoyproxy/go-control-plane/envoy/config/cluster/v3"
 	envoy_config_core_v3 "github.com/envoyproxy/go-control-plane/envoy/config/core/v3"
 	envoy_config_endpoint_v3 "github.com/envoyproxy/go-control-plane/envoy/config/endpoint/v3"
 	envoy_config_listener_v3 "github.com/envoyproxy/go-control-plane/envoy/config/listener/v3"
 	envoy_config_route_v3 "github.com/envoyproxy/go-control-plane/envoy/config/route/v3"
+	envoy_extensions_access_loggers_grpc_v3 "github.com/envoyproxy/go-control-plane/envoy/extensions/access_loggers/grpc/v3"
 	envoy_extensions_filters_http_ext_authz_v3 "github.com/envoyproxy/go-control-plane/envoy/extensions/filters/http/ext_authz/v3"
 	envoy_http_connection_manager "github.com/envoyproxy/go-control-plane/envoy/extensions/filters/network/http_connection_manager/v3"
 	envoy_extensions_transport_sockets_tls_v3 "github.com/envoyproxy/go-control-plane/envoy/extensions/transport_sockets/tls/v3"
 	envoy_service_discovery_v3 "github.com/envoyproxy/go-control-plane/envoy/service/discovery/v3"
 	envoy_type_matcher_v3 "github.com/envoyproxy/go-control-plane/envoy/type/matcher/v3"
+	envoy_type_v3 "github.com/envoyproxy/go-control-plane/envoy/type/v3"
 	"github.com/golang/protobuf/ptypes"
 	"github.com/golang/protobuf/ptypes/any"
-	"golang.org/x/sync/errgroup"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 )
@@ -40,103 +41,6 @@ func init() {
 			Disabled: true,
 		},
 	})
-}
-
-func (srv *Server) registerXDSHandlers() {
-	envoy_service_discovery_v3.RegisterAggregatedDiscoveryServiceServer(srv.GRPCServer, srv)
-}
-
-// StreamAggregatedResources streams xDS resources based on incoming discovery requests.
-//
-// This is setup as 3 concurrent goroutines:
-// - The first retrieves the requests from the client.
-// - The third sends responses back to the client.
-// - The second waits for either the client to request a new resource type
-//   or for the config to have been updated
-//   - in either case, we loop over all of the current client versions
-//     and if any of them are different from the current version, we send
-//     the updated resource
-func (srv *Server) StreamAggregatedResources(stream envoy_service_discovery_v3.AggregatedDiscoveryService_StreamAggregatedResourcesServer) error {
-	versions := map[string]string{}
-	incoming := make(chan *envoy_service_discovery_v3.DiscoveryRequest)
-	outgoing := make(chan *envoy_service_discovery_v3.DiscoveryResponse)
-
-	eg, ctx := errgroup.WithContext(stream.Context())
-	// receive requests
-	eg.Go(func() error {
-		for {
-			req, err := stream.Recv()
-			if err != nil {
-				return err
-			}
-
-			log.Info().
-				Str("version_info", req.VersionInfo).
-				Str("node", req.Node.Id).
-				Strs("resource_names", req.ResourceNames).
-				Str("type_url", req.TypeUrl).
-				Str("response_nonce", req.ResponseNonce).
-				Msg("received discovery request")
-
-			select {
-			case incoming <- req:
-			case <-ctx.Done():
-				return ctx.Err()
-			}
-		}
-	})
-	eg.Go(func() error {
-		for {
-			select {
-			case req := <-incoming:
-				// update the currently stored version
-				// if this version is different from the current version
-				// we will send the response below
-				versions[req.TypeUrl] = req.VersionInfo
-			case <-srv.configUpdated:
-			case <-ctx.Done():
-				return ctx.Err()
-			}
-
-			current := srv.currentConfig.Load().(versionedOptions)
-			for typeURL, version := range versions {
-				// the versions are different, so the envoy config needs to be updated
-				if version != fmt.Sprint(current.version) {
-					res, err := srv.buildDiscoveryResponse(fmt.Sprint(current.version), typeURL, current.Options)
-					if err != nil {
-						return err
-					}
-					select {
-					case outgoing <- res:
-					case <-ctx.Done():
-						return ctx.Err()
-					}
-				}
-			}
-		}
-	})
-	// send responses
-	eg.Go(func() error {
-		for {
-			var res *envoy_service_discovery_v3.DiscoveryResponse
-			select {
-			case res = <-outgoing:
-			case <-ctx.Done():
-				return ctx.Err()
-			}
-
-			err := stream.Send(res)
-			if err != nil {
-				return err
-			}
-		}
-	})
-	return eg.Wait()
-}
-
-// DeltaAggregatedResources is not implemented.
-func (srv *Server) DeltaAggregatedResources(in envoy_service_discovery_v3.AggregatedDiscoveryService_DeltaAggregatedResourcesServer) error {
-	return fmt.Errorf("DeltaAggregatedResources not implemented")
 }
 
 func (srv *Server) buildDiscoveryResponse(version string, typeURL string, options config.Options) (*envoy_service_discovery_v3.DiscoveryResponse, error) {
@@ -271,6 +175,9 @@ func (srv *Server) buildHTTPListener(options config.Options) *envoy_config_liste
 	}
 
 	extAuthZ, _ := ptypes.MarshalAny(&envoy_extensions_filters_http_ext_authz_v3.ExtAuthz{
+		StatusOnError: &envoy_type_v3.HttpStatus{
+			Code: envoy_type_v3.StatusCode_InternalServerError,
+		},
 		Services: &envoy_extensions_filters_http_ext_authz_v3.ExtAuthz_GrpcService{
 			GrpcService: &envoy_config_core_v3.GrpcService{
 				TargetSpecifier: &envoy_config_core_v3.GrpcService_EnvoyGrpc_{
@@ -302,22 +209,44 @@ func (srv *Server) buildHTTPListener(options config.Options) *envoy_config_liste
 				Name: "envoy.filters.http.router",
 			},
 		},
+		AccessLog: []*envoy_config_accesslog_v3.AccessLog{srv.buildAccessLog(options)},
 	})
 
 	li := &envoy_config_listener_v3.Listener{
 		Name:    "http-ingress",
 		Address: buildAddress(options.Addr, defaultPort),
 		FilterChains: []*envoy_config_listener_v3.FilterChain{{
-			Filters: []*envoy_config_listener_v3.Filter{{
-				Name: "envoy.filters.network.http_connection_manager",
-				ConfigType: &envoy_config_listener_v3.Filter_TypedConfig{
-					TypedConfig: tc,
+			Filters: []*envoy_config_listener_v3.Filter{
+				{
+					Name: "envoy.filters.network.http_connection_manager",
+					ConfigType: &envoy_config_listener_v3.Filter_TypedConfig{
+						TypedConfig: tc,
+					},
 				},
-			}},
+			},
 			TransportSocket: transportSocket,
 		}},
 	}
 	return li
+}
+
+func (srv *Server) buildAccessLog(options config.Options) *envoy_config_accesslog_v3.AccessLog {
+	tc, _ := ptypes.MarshalAny(&envoy_extensions_access_loggers_grpc_v3.HttpGrpcAccessLogConfig{
+		CommonConfig: &envoy_extensions_access_loggers_grpc_v3.CommonGrpcAccessLogConfig{
+			LogName: "ingress-http",
+			GrpcService: &envoy_config_core_v3.GrpcService{
+				TargetSpecifier: &envoy_config_core_v3.GrpcService_EnvoyGrpc_{
+					EnvoyGrpc: &envoy_config_core_v3.GrpcService_EnvoyGrpc{
+						ClusterName: "pomerium-control-plane-grpc",
+					},
+				},
+			},
+		},
+	})
+	return &envoy_config_accesslog_v3.AccessLog{
+		Name:       "envoy.access_loggers.http_grpc",
+		ConfigType: &envoy_config_accesslog_v3.AccessLog_TypedConfig{TypedConfig: tc},
+	}
 }
 
 func (srv *Server) buildGRPCListener(options config.Options) *envoy_config_listener_v3.Listener {
@@ -590,6 +519,7 @@ func (srv *Server) buildCluster(name string, endpoint *url.URL) *envoy_config_cl
 				}},
 			}},
 		},
+		RespectDnsTtl: true,
 	}
 
 	if endpoint.Scheme == "grpc" {
@@ -602,7 +532,7 @@ func (srv *Server) buildCluster(name string, endpoint *url.URL) *envoy_config_cl
 		}
 	}
 
-	if net.ParseIP(endpoint.Host) == nil {
+	if net.ParseIP(urlutil.StripPort(endpoint.Host)) == nil {
 		cluster.ClusterDiscoveryType = &envoy_config_cluster_v3.Cluster_Type{Type: envoy_config_cluster_v3.Cluster_LOGICAL_DNS}
 	} else {
 		cluster.ClusterDiscoveryType = &envoy_config_cluster_v3.Cluster_Type{Type: envoy_config_cluster_v3.Cluster_STATIC}
