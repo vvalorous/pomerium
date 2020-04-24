@@ -17,7 +17,7 @@ import (
 	"github.com/pomerium/csrf"
 	"github.com/pomerium/pomerium/internal/cryptutil"
 	"github.com/pomerium/pomerium/internal/httputil"
-	"github.com/pomerium/pomerium/internal/identity"
+	"github.com/pomerium/pomerium/internal/identity/oidc"
 	"github.com/pomerium/pomerium/internal/log"
 	"github.com/pomerium/pomerium/internal/middleware"
 	"github.com/pomerium/pomerium/internal/sessions"
@@ -222,6 +222,9 @@ func (a *Authenticate) SignIn(w http.ResponseWriter, r *http.Request) error {
 // SignOut signs the user out and attempts to revoke the user's identity session
 // Handles both GET and POST.
 func (a *Authenticate) SignOut(w http.ResponseWriter, r *http.Request) error {
+	// no matter what happens, we want to clear the local session store
+	defer a.sessionStore.ClearSession(w, r)
+
 	jwt, err := sessions.FromContext(r.Context())
 	if err != nil {
 		return httputil.NewError(http.StatusBadRequest, err)
@@ -231,17 +234,28 @@ func (a *Authenticate) SignOut(w http.ResponseWriter, r *http.Request) error {
 		return httputil.NewError(http.StatusBadRequest, err)
 	}
 
-	a.sessionStore.ClearSession(w, r)
+	redirectString := r.FormValue(urlutil.QueryRedirectURI)
+
+	// first, try to revoke the session if implemented
 	err = a.provider.Revoke(r.Context(), s.AccessToken)
-	if errors.Is(err, identity.ErrRevokeNotImplemented) {
-		log.FromRequest(r).Warn().Err(err).Msg("authenticate: revoke not implemented")
-	} else if err != nil {
+	if err != nil && !errors.Is(err, oidc.ErrRevokeNotImplemented) {
 		return httputil.NewError(http.StatusBadRequest, err)
 	}
-	redirectURL, err := urlutil.ParseAndValidateURL(r.FormValue(urlutil.QueryRedirectURI))
+
+	// next, try to build a logout url if implemented
+	endSessionURL, err := a.provider.LogOut()
+	if err == nil {
+		params := url.Values{}
+		params.Add("post_logout_redirect_uri", redirectString)
+		endSessionURL.RawQuery = params.Encode()
+		redirectString = endSessionURL.String()
+	} else if !errors.Is(err, oidc.ErrSignoutNotImplemented) {
+		return httputil.NewError(http.StatusBadRequest, err)
+	}
+
+	redirectURL, err := urlutil.ParseAndValidateURL(redirectString)
 	if err != nil {
 		return httputil.NewError(http.StatusBadRequest, err)
-
 	}
 	httputil.Redirect(w, r, redirectURL.String(), http.StatusFound)
 	return nil
