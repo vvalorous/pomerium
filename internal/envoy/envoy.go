@@ -1,15 +1,21 @@
 package envoy
 
 import (
+	"bufio"
 	"context"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
+	"strconv"
 	"strings"
+	"syscall"
 
 	"github.com/natefinch/atomic"
-	"github.com/pomerium/pomerium/config"
+	"github.com/pomerium/pomerium/internal/log"
+	"github.com/rs/zerolog"
 )
 
 const (
@@ -26,7 +32,7 @@ type Server struct {
 }
 
 // NewServer creates a new server with traffic routed by envoy.
-func NewServer(options *config.Options, grpcPort, httpPort string) (*Server, error) {
+func NewServer(grpcPort, httpPort string) (*Server, error) {
 	wd := filepath.Join(os.TempDir(), workingDirectoryName)
 	err := os.MkdirAll(wd, 0755)
 	if err != nil {
@@ -39,7 +45,7 @@ func NewServer(options *config.Options, grpcPort, httpPort string) (*Server, err
 		httpPort: httpPort,
 	}
 
-	err = srv.writeConfig(options)
+	err = srv.writeConfig()
 	if err != nil {
 		return nil, fmt.Errorf("error writing initial envoy configuration: %w", err)
 	}
@@ -48,21 +54,34 @@ func NewServer(options *config.Options, grpcPort, httpPort string) (*Server, err
 }
 
 func (srv *Server) Run(ctx context.Context) error {
-	srv.cmd = exec.CommandContext(ctx, "envoy", "-c", configFileName, "--log-level", "debug")
+	srv.cmd = exec.CommandContext(ctx, "envoy",
+		"-c", configFileName,
+		"--log-level", log.Logger.GetLevel().String(),
+		"--log-format", "%l--%n--%v",
+		"--log-format-escaped",
+	)
 	srv.cmd.Dir = srv.wd
-	srv.cmd.Stdout = os.Stdout
-	srv.cmd.Stderr = os.Stderr
+
+	stderr, err := srv.cmd.StderrPipe()
+	if err != nil {
+		return fmt.Errorf("error creating stderr pipe for envoy: %w", err)
+	}
+	go srv.handleLogs(stderr)
+
+	stdout, err := srv.cmd.StdoutPipe()
+	if err != nil {
+		return fmt.Errorf("error creating stderr pipe for envoy: %w", err)
+	}
+	go srv.handleLogs(stdout)
+
+	// make sure envoy is killed if we're killed
+	srv.cmd.SysProcAttr = &syscall.SysProcAttr{
+		Pdeathsig: syscall.SIGTERM,
+	}
 	return srv.cmd.Run()
 }
 
-func (srv *Server) writeConfig(options *config.Options) error {
-	// bootstrap := GetBootstrapConfig(options)
-	// bs, err := json.Marshal(bootstrap)
-	// if err != nil {
-	// 	return err
-	// }
-	// return atomic.WriteFile(filepath.Join(srv.wd, configFileName), bytes.NewReader(bs))
-
+func (srv *Server) writeConfig() error {
 	return atomic.WriteFile(filepath.Join(srv.wd, configFileName), strings.NewReader(`
 node:
   id: pomerium-envoy
@@ -97,4 +116,38 @@ static_resources:
         port_value: `+srv.grpcPort+`
     http2_protocol_options: {}
 `))
+}
+
+func (srv *Server) handleLogs(stdout io.ReadCloser) {
+	fileNameAndNumberRE := regexp.MustCompile(`^(\[.?:[0-9]+\]) (.*)$`)
+
+	s := bufio.NewScanner(stdout)
+	for s.Scan() {
+		ln := s.Text()
+
+		// format: level--name--message
+		// message is c-escaped
+
+		lvl := zerolog.TraceLevel
+		if pos := strings.Index(ln, "--"); pos >= 0 {
+			lvlstr := ln[:pos]
+			ln = ln[pos+2:]
+			if x, err := zerolog.ParseLevel(lvlstr); err == nil {
+				lvl = x
+			}
+		}
+
+		name := ""
+		if pos := strings.Index(ln, "--"); pos >= 0 {
+			name = ln[:pos]
+			ln = ln[pos+2:]
+		}
+
+		msg := fileNameAndNumberRE.ReplaceAllString(ln, "\"$2\"")
+		if s, err := strconv.Unquote(msg); err == nil {
+			msg = s
+		}
+
+		log.WithLevel(lvl).Str("service", "envoy").Str("name", name).Msg(msg)
+	}
 }

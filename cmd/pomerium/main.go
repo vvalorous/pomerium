@@ -68,7 +68,7 @@ func run() error {
 	_, httpPort, _ := net.SplitHostPort(controlPlane.HTTPListener.Addr().String())
 
 	//
-	envoyServer, err := envoy.NewServer(opt, grpcPort, httpPort)
+	envoyServer, err := envoy.NewServer(grpcPort, httpPort)
 	if err != nil {
 		return fmt.Errorf("error creating envoy server")
 	}
