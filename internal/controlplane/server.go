@@ -61,8 +61,6 @@ func NewServer() (*Server, error) {
 
 // Run runs the control-plane gRPC and HTTP servers.
 func (srv *Server) Run(ctx context.Context) error {
-	//srv.addControlPlaneHTTPRoutes()
-
 	eg, ctx := errgroup.WithContext(ctx)
 
 	// start the gRPC server

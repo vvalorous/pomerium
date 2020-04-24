@@ -2,7 +2,6 @@ package controlplane
 
 import (
 	"fmt"
-	"google.golang.org/grpc/status"
 	"net"
 	"net/url"
 	"os"
@@ -12,23 +11,25 @@ import (
 	"strings"
 	"time"
 
+	"github.com/pomerium/pomerium/config"
+	"github.com/pomerium/pomerium/internal/log"
+	"github.com/pomerium/pomerium/internal/urlutil"
+
 	envoy_config_cluster_v3 "github.com/envoyproxy/go-control-plane/envoy/config/cluster/v3"
 	envoy_config_core_v3 "github.com/envoyproxy/go-control-plane/envoy/config/core/v3"
 	envoy_config_endpoint_v3 "github.com/envoyproxy/go-control-plane/envoy/config/endpoint/v3"
 	envoy_config_listener_v3 "github.com/envoyproxy/go-control-plane/envoy/config/listener/v3"
 	envoy_config_route_v3 "github.com/envoyproxy/go-control-plane/envoy/config/route/v3"
 	envoy_extensions_filters_http_ext_authz_v3 "github.com/envoyproxy/go-control-plane/envoy/extensions/filters/http/ext_authz/v3"
-	envoy_extensions_filters_network_http_connection_manager_v3 "github.com/envoyproxy/go-control-plane/envoy/extensions/filters/network/http_connection_manager/v3"
+	envoy_http_connection_manager "github.com/envoyproxy/go-control-plane/envoy/extensions/filters/network/http_connection_manager/v3"
 	envoy_extensions_transport_sockets_tls_v3 "github.com/envoyproxy/go-control-plane/envoy/extensions/transport_sockets/tls/v3"
 	envoy_service_discovery_v3 "github.com/envoyproxy/go-control-plane/envoy/service/discovery/v3"
 	envoy_type_matcher_v3 "github.com/envoyproxy/go-control-plane/envoy/type/matcher/v3"
 	"github.com/golang/protobuf/ptypes"
 	"github.com/golang/protobuf/ptypes/any"
-	"github.com/pomerium/pomerium/config"
-	"github.com/pomerium/pomerium/internal/log"
-	"github.com/pomerium/pomerium/internal/urlutil"
 	"golang.org/x/sync/errgroup"
 	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 )
 
 var disableExtAuthz *any.Any
@@ -45,6 +46,16 @@ func (srv *Server) registerXDSHandlers() {
 	envoy_service_discovery_v3.RegisterAggregatedDiscoveryServiceServer(srv.GRPCServer, srv)
 }
 
+// StreamAggregatedResources streams xDS resources based on incoming discovery requests.
+//
+// This is setup as 3 concurrent goroutines:
+// - The first retrieves the requests from the client.
+// - The third sends responses back to the client.
+// - The second waits for either the client to request a new resource type
+//   or for the config to have been updated
+//   - in either case, we loop over all of the current client versions
+//     and if any of them are different from the current version, we send
+//     the updated resource
 func (srv *Server) StreamAggregatedResources(stream envoy_service_discovery_v3.AggregatedDiscoveryService_StreamAggregatedResourcesServer) error {
 	versions := map[string]string{}
 	incoming := make(chan *envoy_service_discovery_v3.DiscoveryRequest)
@@ -78,6 +89,9 @@ func (srv *Server) StreamAggregatedResources(stream envoy_service_discovery_v3.A
 		for {
 			select {
 			case req := <-incoming:
+				// update the currently stored version
+				// if this version is different from the current version
+				// we will send the response below
 				versions[req.TypeUrl] = req.VersionInfo
 			case <-srv.configUpdated:
 			case <-ctx.Done():
@@ -86,6 +100,7 @@ func (srv *Server) StreamAggregatedResources(stream envoy_service_discovery_v3.A
 
 			current := srv.currentConfig.Load().(versionedOptions)
 			for typeURL, version := range versions {
+				// the versions are different, so the envoy config needs to be updated
 				if version != fmt.Sprint(current.version) {
 					res, err := srv.buildDiscoveryResponse(fmt.Sprint(current.version), typeURL, current.Options)
 					if err != nil {
@@ -119,6 +134,7 @@ func (srv *Server) StreamAggregatedResources(stream envoy_service_discovery_v3.A
 	return eg.Wait()
 }
 
+// DeltaAggregatedResources is not implemented.
 func (srv *Server) DeltaAggregatedResources(in envoy_service_discovery_v3.AggregatedDiscoveryService_DeltaAggregatedResourcesServer) error {
 	return fmt.Errorf("DeltaAggregatedResources not implemented")
 }
@@ -237,7 +253,7 @@ func (srv *Server) buildHTTPListener(options config.Options) *envoy_config_liste
 			// if this is a gRPC service domain and we're supposed to handle that, add those routes
 			if (config.IsAuthorize(options.Services) && domain == urlutil.StripPort(options.AuthorizeURL.Host)) ||
 				(config.IsCache(options.Services) && domain == urlutil.StripPort(options.CacheURL.Host)) {
-				vh.Routes = append(vh.Routes, srv.buildGRPCRoutes(options)...)
+				vh.Routes = append(vh.Routes, srv.buildGRPCRoutes()...)
 			}
 		}
 
@@ -266,19 +282,19 @@ func (srv *Server) buildHTTPListener(options config.Options) *envoy_config_liste
 		},
 	})
 
-	tc, _ := ptypes.MarshalAny(&envoy_extensions_filters_network_http_connection_manager_v3.HttpConnectionManager{
-		CodecType:  envoy_extensions_filters_network_http_connection_manager_v3.HttpConnectionManager_AUTO,
+	tc, _ := ptypes.MarshalAny(&envoy_http_connection_manager.HttpConnectionManager{
+		CodecType:  envoy_http_connection_manager.HttpConnectionManager_AUTO,
 		StatPrefix: "ingress",
-		RouteSpecifier: &envoy_extensions_filters_network_http_connection_manager_v3.HttpConnectionManager_RouteConfig{
+		RouteSpecifier: &envoy_http_connection_manager.HttpConnectionManager_RouteConfig{
 			RouteConfig: &envoy_config_route_v3.RouteConfiguration{
 				Name:         "main",
 				VirtualHosts: virtualHosts,
 			},
 		},
-		HttpFilters: []*envoy_extensions_filters_network_http_connection_manager_v3.HttpFilter{
+		HttpFilters: []*envoy_http_connection_manager.HttpFilter{
 			{
 				Name: "envoy.filters.http.ext_authz",
-				ConfigType: &envoy_extensions_filters_network_http_connection_manager_v3.HttpFilter_TypedConfig{
+				ConfigType: &envoy_http_connection_manager.HttpFilter_TypedConfig{
 					TypedConfig: extAuthZ,
 				},
 			},
@@ -318,10 +334,10 @@ func (srv *Server) buildGRPCListener(options config.Options) *envoy_config_liste
 		}
 	}
 
-	tc, _ := ptypes.MarshalAny(&envoy_extensions_filters_network_http_connection_manager_v3.HttpConnectionManager{
-		CodecType:  envoy_extensions_filters_network_http_connection_manager_v3.HttpConnectionManager_AUTO,
+	tc, _ := ptypes.MarshalAny(&envoy_http_connection_manager.HttpConnectionManager{
+		CodecType:  envoy_http_connection_manager.HttpConnectionManager_AUTO,
 		StatPrefix: "grpc_ingress",
-		RouteSpecifier: &envoy_extensions_filters_network_http_connection_manager_v3.HttpConnectionManager_RouteConfig{
+		RouteSpecifier: &envoy_http_connection_manager.HttpConnectionManager_RouteConfig{
 			RouteConfig: &envoy_config_route_v3.RouteConfiguration{
 				Name: "grpc",
 				VirtualHosts: []*envoy_config_route_v3.VirtualHost{{
@@ -342,7 +358,7 @@ func (srv *Server) buildGRPCListener(options config.Options) *envoy_config_liste
 				}},
 			},
 		},
-		HttpFilters: []*envoy_extensions_filters_network_http_connection_manager_v3.HttpFilter{{
+		HttpFilters: []*envoy_http_connection_manager.HttpFilter{{
 			Name: "envoy.filters.http.router",
 		}},
 	})
@@ -483,7 +499,7 @@ func (srv *Server) buildPolicyRoutes(options config.Options, domain string) []*e
 	return routes
 }
 
-func (srv *Server) buildGRPCRoutes(options config.Options) []*envoy_config_route_v3.Route {
+func (srv *Server) buildGRPCRoutes() []*envoy_config_route_v3.Route {
 	action := &envoy_config_route_v3.Route_Route{
 		Route: &envoy_config_route_v3.RouteAction{
 			ClusterSpecifier: &envoy_config_route_v3.RouteAction_Cluster{
