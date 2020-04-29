@@ -1,4 +1,4 @@
-package main
+package cmd
 
 import (
 	"fmt"
@@ -157,7 +157,7 @@ func Test_run(t *testing.T) {
 		{"simply print version", true, "", false},
 		{"nil configuration", false, "", true},
 		{"simple proxy", false, `
-		{ 
+		{
 			"address": ":9433",
 			"grpc_address": ":9444",
 			"grpc_insecure": true,
@@ -168,10 +168,10 @@ func Test_run(t *testing.T) {
 			"cookie_secret": "zixWi1MYh77NMECGGIJQevoonYtVF+ZPRkQZrrmeRqM=",
 			"services": "proxy",
 			"policy": [{ "from": "https://pomerium.io", "to": "https://httpbin.org" }]
-		  }	  
+		  }
 		`, false},
 		{"simple authorize", false, `
-		{ 
+		{
 			"address": ":9433",
 			"grpc_address": ":9444",
 			"grpc_insecure": false,
@@ -182,10 +182,10 @@ func Test_run(t *testing.T) {
 			"cookie_secret": "zixWi1MYh77NMECGGIJQevoonYtVF+ZPRkQZrrmeRqM=",
 			"services": "authorize",
 			"policy": [{ "from": "https://pomerium.io", "to": "https://httpbin.org" }]
-		  }	  
+		  }
 		`, false},
 		{"bad proxy no authenticate url", false, `
-		{ 
+		{
 			"address": ":9433",
 			"grpc_address": ":9444",
 			"insecure_server": true,
@@ -194,10 +194,10 @@ func Test_run(t *testing.T) {
 			"cookie_secret": "zixWi1MYh77NMECGGIJQevoonYtVF+ZPRkQZrrmeRqM=",
 			"services": "proxy",
 			"policy": [{ "from": "https://pomerium.io", "to": "https://httpbin.org" }]
-		  }	  
+		  }
 		`, true},
 		{"bad authenticate no cookie secret", false, `
-		{ 
+		{
 			"address": ":9433",
 			"grpc_address": ":9444",
 			"insecure_server": true,
@@ -205,10 +205,10 @@ func Test_run(t *testing.T) {
 			"shared_secret": "YixWi1MYh77NMECGGIJQevoonYtVF+ZPRkQZrrmeRqM=",
 			"services": "authenticate",
 			"policy": [{ "from": "https://pomerium.io", "to": "https://httpbin.org" }]
-		  }	  
+		  }
 		`, true},
 		{"bad authorize service bad shared key", false, `
-		{ 
+		{
 			"address": ":9433",
 			"grpc_address": ":9444",
 			"insecure_server": true,
@@ -217,10 +217,10 @@ func Test_run(t *testing.T) {
 			"cookie_secret": "zixWi1MYh77NMECGGIJQevoonYtVF+ZPRkQZrrmeRqM=",
 			"services": "authorize",
 			"policy": [{ "from": "https://pomerium.io", "to": "https://httpbin.org" }]
-		  }	  
+		  }
 		`, true},
 		{"bad http port", false, `
-		{ 
+		{
 			"address": ":-1",
 			"grpc_address": ":9444",
 			"grpc_insecure": true,
@@ -231,10 +231,10 @@ func Test_run(t *testing.T) {
 			"cookie_secret": "zixWi1MYh77NMECGGIJQevoonYtVF+ZPRkQZrrmeRqM=",
 			"services": "proxy",
 			"policy": [{ "from": "https://pomerium.io", "to": "https://httpbin.org" }]
-		  }	  
+		  }
 		`, true},
 		{"bad redirect port", false, `
-		{ 
+		{
 			"address": ":9433",
 			"http_redirect_addr":":-1",
 			"grpc_address": ":9444",
@@ -246,10 +246,10 @@ func Test_run(t *testing.T) {
 			"cookie_secret": "zixWi1MYh77NMECGGIJQevoonYtVF+ZPRkQZrrmeRqM=",
 			"services": "proxy",
 			"policy": [{ "from": "https://pomerium.io", "to": "https://httpbin.org" }]
-		  }	  
+		  }
 		`, true},
 		{"bad metrics port ", false, `
-		{ 
+		{
 			"address": ":9433",
 			"metrics_address": ":-1",
 			"grpc_insecure": true,
@@ -263,7 +263,7 @@ func Test_run(t *testing.T) {
 		  }
 		`, true},
 		{"malformed tracing provider", false, `
-		{ 
+		{
 			"tracing_provider": "bad tracing provider",
 			"address": ":9433",
 			"grpc_address": ":9444",
@@ -275,7 +275,7 @@ func Test_run(t *testing.T) {
 			"cookie_secret": "zixWi1MYh77NMECGGIJQevoonYtVF+ZPRkQZrrmeRqM=",
 			"services": "proxy",
 			"policy": [{ "from": "https://pomerium.io", "to": "https://httpbin.org" }]
-		  }	  
+		  }
 		`, true},
 		// {"simple cache", false, `
 		// {
@@ -325,7 +325,7 @@ func Test_run(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			versionFlag = &tt.versionFlag
+			rootOptions.version = tt.versionFlag
 			tmpFile, err := ioutil.TempFile(os.TempDir(), "*.json")
 			if err != nil {
 				t.Fatal("Cannot create temporary file", err)
@@ -336,7 +336,7 @@ func Test_run(t *testing.T) {
 				tmpFile.Close()
 				t.Fatal(err)
 			}
-			configFile = &fn
+			rootOptions.configFilePath = fn
 			proc, err := os.FindProcess(os.Getpid())
 			if err != nil {
 				t.Fatal(err)
@@ -346,7 +346,7 @@ func Test_run(t *testing.T) {
 				proc.Signal(os.Interrupt)
 			}()
 
-			err = run()
+			err = rootRun(nil, nil)
 			if (err != nil) != tt.wantErr {
 				t.Errorf("run() error = %v, wantErr %v", err, tt.wantErr)
 			}
