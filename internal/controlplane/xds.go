@@ -1,11 +1,19 @@
 package controlplane
 
 import (
+	"bytes"
+	"crypto/tls"
+	"crypto/x509"
+	"encoding/pem"
 	"fmt"
 	"net"
+	"os"
 	"strconv"
 
+	envoy_extensions_transport_sockets_tls_v3 "github.com/envoyproxy/go-control-plane/envoy/extensions/transport_sockets/tls/v3"
+
 	"github.com/pomerium/pomerium/config"
+	"github.com/pomerium/pomerium/internal/log"
 
 	envoy_config_accesslog_v3 "github.com/envoyproxy/go-control-plane/envoy/config/accesslog/v3"
 	envoy_config_core_v3 "github.com/envoyproxy/go-control-plane/envoy/config/core/v3"
@@ -116,4 +124,67 @@ func inlineBytes(bs []byte) *envoy_config_core_v3.DataSource {
 			InlineBytes: bs,
 		},
 	}
+}
+
+func inlineFilename(name string) *envoy_config_core_v3.DataSource {
+	return &envoy_config_core_v3.DataSource{
+		Specifier: &envoy_config_core_v3.DataSource_Filename{
+			Filename: name,
+		},
+	}
+}
+
+func getPolicyName(policy *config.Policy) string {
+	return fmt.Sprintf("policy-%x", policy.Checksum())
+}
+
+func envoyTLSCertificateFromGoTLSCertificate(cert *tls.Certificate) *envoy_extensions_transport_sockets_tls_v3.TlsCertificate {
+	envoyCert := &envoy_extensions_transport_sockets_tls_v3.TlsCertificate{}
+	var chain bytes.Buffer
+	for _, cbs := range cert.Certificate {
+		_ = pem.Encode(&chain, &pem.Block{
+			Type:  "CERTIFICATE",
+			Bytes: cbs,
+		})
+		break
+	}
+	envoyCert.CertificateChain = inlineBytes(chain.Bytes())
+	if cert.OCSPStaple != nil {
+		envoyCert.OcspStaple = inlineBytes(cert.OCSPStaple)
+	}
+	if bs, err := x509.MarshalPKCS8PrivateKey(cert.PrivateKey); err == nil {
+		envoyCert.PrivateKey = inlineBytes(pem.EncodeToMemory(
+			&pem.Block{
+				Type:  "PRIVATE KEY",
+				Bytes: bs,
+			},
+		))
+	} else {
+		log.Warn().Err(err).Msg("failed to marshal private key for tls config")
+	}
+	for _, scts := range cert.SignedCertificateTimestamps {
+		envoyCert.SignedCertificateTimestamp = append(envoyCert.SignedCertificateTimestamp,
+			inlineBytes(scts))
+	}
+	return envoyCert
+}
+
+func getRootCertificateAuthority() (string, error) {
+	// from https://www.envoyproxy.io/docs/envoy/latest/intro/arch_overview/security/ssl#arch-overview-ssl-enabling-verification
+	knownRootLocations := []string{
+		"/etc/ssl/certs/ca-certificates.crt",
+		"/etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem",
+		"/etc/pki/tls/certs/ca-bundle.crt",
+		"/etc/ssl/ca-bundle.pem",
+		"/usr/local/etc/ssl/cert.pem",
+		"/etc/ssl/cert.pem",
+	}
+
+	for _, path := range knownRootLocations {
+		if _, err := os.Stat(path); err == nil {
+			return path, nil
+		}
+	}
+
+	return "", fmt.Errorf("root certificates not found")
 }

@@ -219,7 +219,7 @@ func TestTLSSkipVerify(t *testing.T) {
 		}
 		defer res.Body.Close()
 
-		assert.Equal(t, http.StatusBadGateway, res.StatusCode)
+		assert.Contains(t, []int{http.StatusBadGateway, http.StatusServiceUnavailable}, res.StatusCode)
 	})
 }
 
@@ -258,7 +258,7 @@ func TestTLSServerName(t *testing.T) {
 		}
 		defer res.Body.Close()
 
-		assert.Equal(t, http.StatusBadGateway, res.StatusCode)
+		assert.Contains(t, []int{http.StatusBadGateway, http.StatusServiceUnavailable}, res.StatusCode)
 	})
 }
 
@@ -335,7 +335,7 @@ func TestTLSClientCert(t *testing.T) {
 		}
 		defer res.Body.Close()
 
-		assert.Equal(t, http.StatusBadGateway, res.StatusCode)
+		assert.Contains(t, []int{http.StatusBadGateway, http.StatusServiceUnavailable}, res.StatusCode)
 	})
 }
 
