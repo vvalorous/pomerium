@@ -35,10 +35,15 @@ func TestMain(m *testing.M) {
 	mainCtx, clearTimeout = context.WithTimeout(mainCtx, time.Minute*10)
 	defer clearTimeout()
 
-	cluster.Start(mainCtx)
+	wg, err := cluster.Start(mainCtx)
+	if err != nil {
+		log.Fatal().Err(err).Send()
+	}
 
 	status := m.Run()
 	cancel()
+	wg.Wait()
+
 	gocleanup.Cleanup()
 	os.Exit(status)
 }

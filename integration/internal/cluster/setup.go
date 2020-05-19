@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"sync"
 	"time"
 
 	"golang.org/x/crypto/hkdf"
@@ -22,12 +23,13 @@ import (
 )
 
 // Start starts all the needed servers to facilitate the integration tests.
-func Start(ctx context.Context) error {
+func Start(ctx context.Context) (*sync.WaitGroup, error) {
+	var wg sync.WaitGroup
 	var err error
 
 	certsBundle, err := bootstrapCerts(ctx)
 	if err != nil {
-		return err
+		return nil, err
 	}
 
 	cacheDir, err := os.UserCacheDir()
@@ -38,7 +40,7 @@ func Start(ctx context.Context) error {
 	wd := filepath.Join(cacheDir, "pomerium", "integration-tests")
 	err = os.MkdirAll(wd, 0755)
 	if err != nil {
-		return err
+		return nil, err
 	}
 
 	baseOptions := &config.Options{
@@ -50,30 +52,54 @@ func Start(ctx context.Context) error {
 		ClientID:                 "pomerium-authenticate",
 		ClientSecret:             "pomerium-authenticate-secret",
 		Provider:                 "oidc",
+		CacheStore:               "bolt",
 	}
 
-	for _, options := range ProxyAllInOne.GetPomeriumConfigs(baseOptions) {
-		options.CA = base64.StdEncoding.EncodeToString(certsBundle.Trusted.CA)
-		options.Cert = base64.StdEncoding.EncodeToString(certsBundle.Trusted.Cert)
-		options.Key = base64.StdEncoding.EncodeToString(certsBundle.Trusted.Key)
+	type ProxyDefinition struct {
+		Proxy Proxy
+		Certs *TLSCerts
+	}
 
-		bs, err := yaml.Marshal(options)
-		if err != nil {
-			return err
-		}
+	var proxyDefinitions = []ProxyDefinition{
+		{Proxy: ProxyAllInOne, Certs: &certsBundle.Trusted},
+		{Proxy: ProxySecure, Certs: &certsBundle.Trusted},
+		{Proxy: ProxyInsecure, Certs: &certsBundle.Untrusted},
+	}
 
-		name := filepath.Join(wd, fmt.Sprintf("pomerium-config-%x.yaml", options.Checksum()))
+	for _, proxyDefinition := range proxyDefinitions {
+		proxy := proxyDefinition.Proxy
+		for _, options := range proxy.GetPomeriumConfigs(baseOptions) {
+			options := options
 
-		err = ioutil.WriteFile(name, bs, 0644)
-		if err != nil {
-			return err
-		}
-
-		go func() {
-			if err := pomerium.Run(ctx, name); err != nil {
-				log.Error().Err(err).Str("config-file", name).Msg("failed to run pomerium")
+			if proxyDefinition.Certs != nil {
+				options.CA = base64.StdEncoding.EncodeToString(proxyDefinition.Certs.CA)
+				options.Cert = base64.StdEncoding.EncodeToString(proxyDefinition.Certs.Cert)
+				options.Key = base64.StdEncoding.EncodeToString(proxyDefinition.Certs.Key)
 			}
-		}()
+
+			bs, err := yaml.Marshal(options)
+			if err != nil {
+				return nil, err
+			}
+
+			name := filepath.Join(wd, fmt.Sprintf("pomerium-config-%x.yaml", options.Checksum()))
+
+			err = ioutil.WriteFile(name, bs, 0644)
+			if err != nil {
+				return nil, err
+			}
+
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				if err := pomerium.Run(ctx, name); err != nil {
+					if ctx.Err() == nil {
+						log.Error().Err(err).Str("config-file", name).Str("proxy", proxy.String()).Str("service", options.Services).Msg("failed to run pomerium")
+					}
+				}
+			}()
+		}
+
 	}
 
 	ticker := time.NewTicker(time.Second)
@@ -94,13 +120,15 @@ func Start(ctx context.Context) error {
 
 			select {
 			case <-waitCtx.Done():
-				return waitCtx.Err()
+				return &wg, waitCtx.Err()
 			case <-ticker.C:
 			}
 		}
 	}
 
-	return nil
+	time.Sleep(time.Second * 3)
+
+	return &wg, nil
 }
 
 func getKeyFromPassword(password string, sz int) []byte {

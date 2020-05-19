@@ -41,7 +41,7 @@ func Test_setupMetrics(t *testing.T) {
 			c := make(chan os.Signal, 1)
 			signal.Notify(c, syscall.SIGINT)
 			defer signal.Stop(c)
-			setupMetrics(context.Background(), tt.opt)
+			setupMetrics(context.Background(), tt.opt, "9901")
 			syscall.Kill(syscall.Getpid(), syscall.SIGINT)
 			waitSig(t, c, syscall.SIGINT)
 		})

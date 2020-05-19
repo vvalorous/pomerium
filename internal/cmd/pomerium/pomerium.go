@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/signal"
 	"sync"
+	"sync/atomic"
 	"syscall"
 
 	envoy_service_auth_v2 "github.com/envoyproxy/go-control-plane/envoy/service/auth/v2"
@@ -30,6 +31,8 @@ import (
 	"github.com/pomerium/pomerium/proxy"
 )
 
+var nextAdminPort int64 = 9900
+
 // Run runs the main pomerium application.
 func Run(ctx context.Context, configFile string) error {
 	opt, err := config.NewOptionsFromConfig(configFile)
@@ -38,9 +41,11 @@ func Run(ctx context.Context, configFile string) error {
 	}
 	var optionsUpdaters []config.OptionsUpdater
 
+	envoyAdminPort := fmt.Sprint(atomic.AddInt64(&nextAdminPort, 1))
+
 	log.Info().Str("version", version.FullVersion()).Msg("cmd/pomerium")
 
-	if err := setupMetrics(ctx, opt); err != nil {
+	if err := setupMetrics(ctx, opt, envoyAdminPort); err != nil {
 		return err
 	}
 	if err := setupTracing(ctx, opt); err != nil {
@@ -62,7 +67,7 @@ func Run(ctx context.Context, configFile string) error {
 	_, httpPort, _ := net.SplitHostPort(controlPlane.HTTPListener.Addr().String())
 
 	// create envoy server
-	envoyServer, err := envoy.NewServer(grpcPort, httpPort)
+	envoyServer, err := envoy.NewServer(grpcPort, httpPort, envoyAdminPort)
 	if err != nil {
 		return fmt.Errorf("error creating envoy server")
 	}
@@ -163,9 +168,9 @@ func setupCache(opt *config.Options, controlPlane *controlplane.Server) error {
 	return nil
 }
 
-func setupMetrics(ctx context.Context, opt *config.Options) error {
+func setupMetrics(ctx context.Context, opt *config.Options, envoyAdminPort string) error {
 	if opt.MetricsAddr != "" {
-		handler, err := metrics.PrometheusHandler()
+		handler, err := metrics.PrometheusHandler(envoyAdminPort)
 		if err != nil {
 			return err
 		}

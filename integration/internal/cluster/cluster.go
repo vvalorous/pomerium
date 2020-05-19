@@ -68,6 +68,9 @@ const (
 	ProxyInsecure
 )
 
+// AllProxies is a collection of all the available proxies.
+var AllProxies = []Proxy{ProxyAllInOne, ProxySecure, ProxyInsecure}
+
 var proxyToString = map[Proxy]string{
 	ProxyAllInOne: "all-in-one",
 	ProxySecure:   "secure",
@@ -97,6 +100,18 @@ var proxyPorts = map[Proxy]map[Endpoint]int{
 
 var proxyToScheme = map[Proxy]map[Endpoint]string{
 	ProxyAllInOne: {
+		EndpointPomeriumAuthenticate: "https",
+		EndpointPomeriumAuthorize:    "http",
+		EndpointPomeriumCache:        "http",
+		EndpointPomeriumProxy:        "https",
+	},
+	ProxySecure: {
+		EndpointPomeriumAuthenticate: "https",
+		EndpointPomeriumAuthorize:    "https",
+		EndpointPomeriumCache:        "https",
+		EndpointPomeriumProxy:        "https",
+	},
+	ProxyInsecure: {
 		EndpointPomeriumAuthenticate: "https",
 		EndpointPomeriumAuthorize:    "http",
 		EndpointPomeriumCache:        "http",
@@ -200,9 +215,20 @@ func (p Proxy) GetPomeriumConfigs(base *config.Options) []*config.Options {
 		o.ProviderURL = ReferenceOpenIDProviderURL
 		o.AuthorizeURLString = p.UpstreamURL(EndpointPomeriumAuthorize)
 		o.CacheURLString = p.UpstreamURL(EndpointPomeriumCache)
+		o.Policies = p.GetPolicies()
 
 		options = append(options, o)
 	}
 
 	return options
+}
+
+func (p Proxy) GetPolicies() []config.Policy {
+	return []config.Policy{
+		{
+			From:                             p.DownstreamURL(EndpointHTTPDetailsTrusted),
+			To:                               p.UpstreamURL(EndpointHTTPDetailsTrusted),
+			AllowPublicUnauthenticatedAccess: true,
+		},
+	}
 }

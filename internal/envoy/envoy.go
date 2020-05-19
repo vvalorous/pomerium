@@ -22,9 +22,6 @@ import (
 
 const (
 	workingDirectoryName = ".pomerium-envoy"
-	configFileName       = "envoy-config.yaml"
-	// EnvoyAdminURL indicates where the envoy control plane is listening
-	EnvoyAdminURL = "http://localhost:9901"
 )
 
 // A Server is a pomerium proxy implemented via envoy.
@@ -32,11 +29,11 @@ type Server struct {
 	wd  string
 	cmd *exec.Cmd
 
-	grpcPort, httpPort string
+	grpcPort, httpPort, adminPort string
 }
 
 // NewServer creates a new server with traffic routed by envoy.
-func NewServer(grpcPort, httpPort string) (*Server, error) {
+func NewServer(grpcPort, httpPort, adminPort string) (*Server, error) {
 	wd := filepath.Join(os.TempDir(), workingDirectoryName)
 	err := os.MkdirAll(wd, 0755)
 	if err != nil {
@@ -44,9 +41,10 @@ func NewServer(grpcPort, httpPort string) (*Server, error) {
 	}
 
 	srv := &Server{
-		wd:       wd,
-		grpcPort: grpcPort,
-		httpPort: httpPort,
+		wd:        wd,
+		grpcPort:  grpcPort,
+		httpPort:  httpPort,
+		adminPort: adminPort,
 	}
 
 	err = srv.writeConfig()
@@ -66,10 +64,11 @@ func (srv *Server) Run(ctx context.Context) error {
 	}
 
 	srv.cmd = exec.CommandContext(ctx, envoyPath,
-		"-c", configFileName,
-		"--log-level", log.Logger.GetLevel().String(),
-		"--log-format", "%l--%n--%v",
+		"-c", srv.configFileName(),
+		"--log-format", "[LOG_FORMAT]%l--%n--%v",
 		"--log-format-escaped",
+		//"--log-format-prefix-with-location", "0", // not supported in our version yet
+		"--disable-hot-restart",
 	)
 	srv.cmd.Dir = srv.wd
 
@@ -77,12 +76,14 @@ func (srv *Server) Run(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("error creating stderr pipe for envoy: %w", err)
 	}
+	defer stderr.Close()
 	go srv.handleLogs(stderr)
 
 	stdout, err := srv.cmd.StdoutPipe()
 	if err != nil {
 		return fmt.Errorf("error creating stderr pipe for envoy: %w", err)
 	}
+	defer stdout.Close()
 	go srv.handleLogs(stdout)
 
 	// make sure envoy is killed if we're killed
@@ -95,7 +96,7 @@ func (srv *Server) Run(ctx context.Context) error {
 }
 
 func (srv *Server) writeConfig() error {
-	return atomic.WriteFile(filepath.Join(srv.wd, configFileName), strings.NewReader(`
+	return atomic.WriteFile(filepath.Join(srv.wd, srv.configFileName()), strings.NewReader(`
 node:
   id: pomerium-envoy
   cluster: pomerium-envoy
@@ -103,7 +104,7 @@ node:
 admin:
   access_log_path: /tmp/admin_access.log
   address:
-    socket_address: { address: 127.0.0.1, port_value: 9901 }
+    socket_address: { address: 127.0.0.1, port_value: `+srv.adminPort+` }
 
 dynamic_resources:
   cds_config:
@@ -132,35 +133,40 @@ static_resources:
 }
 
 func (srv *Server) handleLogs(stdout io.ReadCloser) {
-	fileNameAndNumberRE := regexp.MustCompile(`^(\[[^:]+:[0-9]+\])\s(.*)$`)
+	logFormatRE := regexp.MustCompile(`^[[]LOG_FORMAT[]](.*?)--(.*?)--(.*?)$`)
+	fileNameAndNumberRE := regexp.MustCompile(`^(\[[a-zA-Z0-9/-_.]+:[0-9]+\])\s(.*)$`)
 
 	s := bufio.NewScanner(stdout)
 	for s.Scan() {
 		ln := s.Text()
 
-		// format: level--name--message
+		// format: \x01level\x1Ename\x1Emessage
 		// message is c-escaped
 
-		lvl := zerolog.TraceLevel
-		if pos := strings.Index(ln, "--"); pos >= 0 {
-			lvlstr := ln[:pos]
-			ln = ln[pos+2:]
-			if x, err := zerolog.ParseLevel(lvlstr); err == nil {
+		lvl := zerolog.DebugLevel
+		name := "envoy"
+		msg := ln
+		parts := logFormatRE.FindStringSubmatch(ln)
+		if len(parts) == 4 {
+			if x, err := zerolog.ParseLevel(parts[1]); err == nil {
 				lvl = x
 			}
+			name = parts[2]
+			msg = parts[3]
 		}
 
-		name := ""
-		if pos := strings.Index(ln, "--"); pos >= 0 {
-			name = ln[:pos]
-			ln = ln[pos+2:]
-		}
-
-		msg := fileNameAndNumberRE.ReplaceAllString(ln, "\"$2\"")
+		msg = fileNameAndNumberRE.ReplaceAllString(msg, "\"$2\"")
 		if s, err := strconv.Unquote(msg); err == nil {
 			msg = s
 		}
 
-		log.WithLevel(lvl).Str("service", "envoy").Str("name", name).Msg(msg)
+		log.WithLevel(lvl).
+			Str("service", "envoy").
+			Str("name", name).
+			Msg(msg)
 	}
+}
+
+func (srv *Server) configFileName() string {
+	return fmt.Sprintf("envoy-config-%s.yaml", srv.adminPort)
 }

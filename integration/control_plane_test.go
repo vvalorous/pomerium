@@ -8,6 +8,8 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/assert"
+
+	"github.com/pomerium/pomerium/integration/internal/cluster"
 )
 
 func TestDashboard(t *testing.T) {
@@ -15,40 +17,45 @@ func TestDashboard(t *testing.T) {
 	ctx, clearTimeout := context.WithTimeout(ctx, time.Second*30)
 	defer clearTimeout()
 
-	t.Run("image asset", func(t *testing.T) {
-		client := http.DefaultClient
+	for _, proxy := range cluster.AllProxies {
+		t.Run(proxy.String(), func(t *testing.T) {
+			t.Run("image asset", func(t *testing.T) {
+				client := http.DefaultClient
 
-		req, err := http.NewRequestWithContext(ctx, "GET", "https://httpdetails.localhost.pomerium.io/.pomerium/assets/img/pomerium.svg", nil)
-		if err != nil {
-			t.Fatal(err)
-		}
+				req, err := http.NewRequestWithContext(ctx, "GET", proxy.DownstreamURL(cluster.EndpointHTTPDetailsTrusted)+"/.pomerium/assets/img/pomerium.svg", nil)
+				if err != nil {
+					t.Fatal(err)
+				}
 
-		res, err := client.Do(req)
-		if !assert.NoError(t, err, "unexpected http error") {
-			return
-		}
-		defer res.Body.Close()
+				res, err := client.Do(req)
+				if !assert.NoError(t, err, "unexpected http error") {
+					return
+				}
+				defer res.Body.Close()
 
-		assert.Equal(t, http.StatusOK, res.StatusCode, "unexpected status code")
-		assert.Equal(t, "image/svg+xml", res.Header.Get("Content-Type"))
-	})
-	t.Run("forward auth image asset", func(t *testing.T) {
-		client := http.DefaultClient
+				assert.Equal(t, http.StatusOK, res.StatusCode, "unexpected status code")
+				assert.Equal(t, "image/svg+xml", res.Header.Get("Content-Type"))
+			})
+			t.Run("forward auth image asset", func(t *testing.T) {
+				client := http.DefaultClient
 
-		req, err := http.NewRequestWithContext(ctx, "GET", "https://fa-httpdetails.localhost.pomerium.io/.pomerium/assets/img/pomerium.svg", nil)
-		if err != nil {
-			t.Fatal(err)
-		}
+				req, err := http.NewRequestWithContext(ctx, "GET", "https://fa-httpdetails.localhost.pomerium.io/.pomerium/assets/img/pomerium.svg", nil)
+				if err != nil {
+					t.Fatal(err)
+				}
 
-		res, err := client.Do(req)
-		if !assert.NoError(t, err, "unexpected http error") {
-			return
-		}
-		defer res.Body.Close()
+				res, err := client.Do(req)
+				if !assert.NoError(t, err, "unexpected http error") {
+					return
+				}
+				defer res.Body.Close()
 
-		assert.Equal(t, http.StatusOK, res.StatusCode, "unexpected status code")
-		assert.Equal(t, "image/svg+xml", res.Header.Get("Content-Type"))
-	})
+				assert.Equal(t, http.StatusOK, res.StatusCode, "unexpected status code")
+				assert.Equal(t, "image/svg+xml", res.Header.Get("Content-Type"))
+			})
+		})
+	}
+
 }
 
 func TestHealth(t *testing.T) {
