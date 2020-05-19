@@ -4,20 +4,18 @@ import (
 	"context"
 	"flag"
 	"os"
-	"path/filepath"
-	"runtime"
 	"testing"
 	"time"
 
 	"github.com/onsi/gocleanup"
-	"github.com/pomerium/pomerium/integration/internal/cluster"
 	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/log"
+
+	"github.com/pomerium/pomerium/integration/internal/cluster"
 )
 
 var (
-	mainCtx     context.Context
-	testcluster *cluster.Cluster
+	mainCtx context.Context
 )
 
 func TestMain(m *testing.M) {
@@ -37,10 +35,7 @@ func TestMain(m *testing.M) {
 	mainCtx, clearTimeout = context.WithTimeout(mainCtx, time.Minute*10)
 	defer clearTimeout()
 
-	testcluster = cluster.New(getBaseDir())
-	if err := testcluster.Setup(mainCtx); err != nil {
-		log.Fatal().Err(err).Send()
-	}
+	cluster.Start(mainCtx)
 
 	status := m.Run()
 	cancel()
@@ -48,8 +43,8 @@ func TestMain(m *testing.M) {
 	os.Exit(status)
 }
 
-// getBaseDir returns the directory that main_test resides in
-func getBaseDir() string {
-	_, file, _, _ := runtime.Caller(0) //nolint
-	return filepath.Dir(file)
-}
+// // getBaseDir returns the directory that main_test resides in
+// func getBaseDir() string {
+// 	_, file, _, _ := runtime.Caller(0) //nolint
+// 	return filepath.Dir(file)
+// }

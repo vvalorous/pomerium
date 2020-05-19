@@ -25,17 +25,17 @@ func withEnv(env ...string) cmdOption {
 	}
 }
 
-func withStdin(rdr io.Reader) cmdOption {
-	return func(cmd *exec.Cmd) {
-		cmd.Stdin = rdr
-	}
-}
+// func withStdin(rdr io.Reader) cmdOption {
+// 	return func(cmd *exec.Cmd) {
+// 		cmd.Stdin = rdr
+// 	}
+// }
 
-func withStdout(w io.Writer) cmdOption {
-	return func(cmd *exec.Cmd) {
-		cmd.Stdout = w
-	}
-}
+// func withStdout(w io.Writer) cmdOption {
+// 	return func(cmd *exec.Cmd) {
+// 		cmd.Stdout = w
+// 	}
+// }
 
 func withWorkingDir(wd string) cmdOption {
 	return func(cmd *exec.Cmd) {

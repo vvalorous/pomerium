@@ -16,7 +16,7 @@ func TestDashboard(t *testing.T) {
 	defer clearTimeout()
 
 	t.Run("image asset", func(t *testing.T) {
-		client := testcluster.NewHTTPClient()
+		client := http.DefaultClient
 
 		req, err := http.NewRequestWithContext(ctx, "GET", "https://httpdetails.localhost.pomerium.io/.pomerium/assets/img/pomerium.svg", nil)
 		if err != nil {
@@ -33,7 +33,7 @@ func TestDashboard(t *testing.T) {
 		assert.Equal(t, "image/svg+xml", res.Header.Get("Content-Type"))
 	})
 	t.Run("forward auth image asset", func(t *testing.T) {
-		client := testcluster.NewHTTPClient()
+		client := http.DefaultClient
 
 		req, err := http.NewRequestWithContext(ctx, "GET", "https://fa-httpdetails.localhost.pomerium.io/.pomerium/assets/img/pomerium.svg", nil)
 		if err != nil {
@@ -69,7 +69,7 @@ func TestHealth(t *testing.T) {
 			endpoint := endpoint
 			routeToCheck := fmt.Sprintf("%s/%s", route, endpoint)
 			t.Run(routeToCheck, func(t *testing.T) {
-				client := testcluster.NewHTTPClient()
+				client := http.DefaultClient
 				req, err := http.NewRequestWithContext(ctx, "GET", routeToCheck, nil)
 				if err != nil {
 					t.Fatal(err)
