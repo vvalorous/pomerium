@@ -121,3 +121,56 @@ func Test_anyToInt(t *testing.T) {
 	assert.Equal(t, 11, anyToInt(uint64(11)))
 	assert.Equal(t, 13, anyToInt(13.0))
 }
+
+func BenchmarkPolicyEvaluator_IsAuthorized(b *testing.B) {
+	type Identity struct {
+		User              string   `json:"user,omitempty"`
+		Email             string   `json:"email,omitempty"`
+		Groups            []string `json:"groups,omitempty"`
+		ImpersonateEmail  string   `json:"impersonate_email,omitempty"`
+		ImpersonateGroups []string `json:"impersonate_groups,omitempty"`
+	}
+
+	policies := []config.Policy{
+		{
+			From:           "https://from.example",
+			To:             "https://to.example",
+			AllowedDomains: []string{"example.com"},
+		},
+	}
+
+	key := []byte("secret")
+	sig, err := jose.NewSigner(jose.SigningKey{Algorithm: jose.HS256, Key: key},
+		(&jose.SignerOptions{}).WithType("JWT"))
+	if !assert.NoError(b, err) {
+		return
+	}
+
+	cl := jwt.Claims{
+		NotBefore: jwt.NewNumericDate(time.Now()),
+		Expiry:    jwt.NewNumericDate(time.Now().Add(time.Hour)),
+		Audience:  jwt.Audience{"from.example"},
+	}
+	rawJWT, err := jwt.Signed(sig).Claims(cl).Claims(&Identity{Email: "user@example.com"}).CompactSerialize()
+	if !assert.NoError(b, err) {
+		return
+	}
+
+	pe, err := New(context.Background(), &Options{
+		Data: map[string]interface{}{
+			"route_policies": policies,
+		},
+	})
+	if !assert.NoError(b, err) {
+		return
+	}
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		pe.IsAuthorized(context.Background(), &evaluator.Request{
+			Host:   "from.example",
+			Method: "GET",
+			URL:    "https://from.example",
+			User:   rawJWT,
+		})
+	}
+}
