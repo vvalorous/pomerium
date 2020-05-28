@@ -10,7 +10,7 @@ meta:
 
 [Certificates](https://en.wikipedia.org/wiki/X.509) and [TLS](https://en.wikipedia.org/wiki/Transport_Layer_Security) play a vital role in [zero-trust][principles] networks, and in Pomerium.
 
-This document covers a few options in how to generate and set up TLS certificates suitable for working with pomerium.
+This document covers a few options for how to generate and set up TLS certificates suitable for working with Pomerium.
 
 This guide uses the following tools and resources:
 
