@@ -31,7 +31,7 @@ See the python script below for example of how to start a callback server, and s
 
 ### Refresh API
 
-The Refresh API allows for a valid refresh token enabled session, using an `Authorization: Pomerium` bearer token, to refresh the current user session and return a new user session (`jwt`) and refresh token (`refresh_token`). If successfully, a new updated refresh token and identity session are returned as a json response.
+The Refresh API allows for a valid refresh token enabled session, using an `Authorization: Pomerium` bearer token, to refresh the current user session and return a new user session (`jwt`) and refresh token (`refresh_token`). If successful, a new updated refresh token and identity session are returned as a json response.
 
 ```bash
 $ curl \
@@ -54,7 +54,7 @@ Note that the Authorization refresh token is set to Authorization `Pomerium` _no
 
 Your application should handle token expiration. If the session expires before work is done, the identity provider issued `refresh_token` can be used to create a new valid session.
 
-Also, your script or application should anticipate the possibility that a granted `refresh_token` may stop working. For example, a refresh token might stop working if the underlying user changes passwords, revokes access, or if the administrator removes rotates or deletes the OAuth Client ID.
+Also, your script or application should anticipate the possibility that a granted `refresh_token` may stop working. For example, a refresh token may stop working if the underlying user changes their password or revokes access, or if the administrator removes, rotates, or deletes the OAuth Client ID.
 
 ## High level workflow
 
@@ -72,7 +72,7 @@ The application interacting with Pomerium must manage the following workflow. Co
 
 ## Example Code
 
-Please consider see the following minimal but complete python example.
+Please consider the following minimal but complete python example.
 
 ```bash
 python3 scripts/programmatic_access.py \
